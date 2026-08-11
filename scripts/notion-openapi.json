@@ -734,7 +734,7 @@
         "security": []
       },
       "patch": {
-        "summary": "Append child blocks to a page or block. Pass `after` with an existing block ID to insert at that position rather than at the end. Note that Notion's API has no move operation: reordering existing content means appending a copy and deleting the original, which assigns new block IDs and does not carry over comments.",
+        "summary": "Append child blocks to a page or block. Pass `after` with an existing block ID to insert at that position rather than at the end. Only `paragraph` and `bulleted_list_item` are described by this schema; to add other block types, write them as Markdown with Update a page's content as Markdown instead. Note that Notion's API has no move operation: reordering existing content means appending a copy and deleting the original, which assigns new block IDs and does not carry over comments.",
         "description": "",
         "operationId": "patch-block-children",
         "parameters": [
@@ -879,7 +879,7 @@
         "security": []
       },
       "patch": {
-        "summary": "Replace a block's content in place, addressed by block ID. Prefer this over Markdown find-and-replace for targeted edits: it does not require reproducing the block's existing text, so it is unaffected by how that text renders. Get block IDs from Retrieve block children.",
+        "summary": "Replace a block's content in place, addressed by block ID. Prefer this over Markdown find-and-replace for targeted edits: it does not require reproducing the block's existing text, so it is unaffected by how that text renders. Put the block-type key at the root of the body — `{\"paragraph\": {\"rich_text\": [...]}}` — matching the block's existing type, since a block cannot change type. Get block IDs and their types from Retrieve block children.",
         "description": "",
         "operationId": "update-a-block",
         "parameters": [
@@ -901,18 +901,46 @@
             "application/json": {
               "schema": {
                 "type": "object",
+                "description": "The [block object `type`](ref:block#block-object-keys) value with the properties to be updated. The block-type key goes at the root of the body — `{\"paragraph\": {\"rich_text\": [...]}}`, not wrapped in a `type` field. Send the key matching the block's existing type; a block cannot change type. Block types other than the two described here (`heading_1`, `heading_2`, `heading_3`, `to_do`, `callout`, `code`, `quote`, `numbered_list_item`, …) take the same shape and are accepted. Only `rich_text` (for supported block types) and `checked` (for `to_do` blocks) can be updated.",
                 "properties": {
-                  "type": {
+                  "paragraph": {
                     "type": "object",
-                    "description": "The [block object `type`](ref:block#block-object-keys) value with the properties to be updated. Currently only `text` (for supported block types) and `checked` (for `to_do` blocks) fields can be updated.",
-                    "properties": {}
+                    "description": "New content for a `paragraph` block.",
+                    "properties": {
+                      "rich_text": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/richTextRequest"
+                        },
+                        "maxItems": 100
+                      }
+                    },
+                    "required": [
+                      "rich_text"
+                    ]
+                  },
+                  "bulleted_list_item": {
+                    "type": "object",
+                    "description": "New content for a `bulleted_list_item` block.",
+                    "properties": {
+                      "rich_text": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/richTextRequest"
+                        },
+                        "maxItems": 100
+                      }
+                    },
+                    "required": [
+                      "rich_text"
+                    ]
                   },
                   "archived": {
                     "type": "boolean",
-                    "description": "Set to true to archive (delete) a block. Set to false to un-archive (restore) a block.",
-                    "default": true
+                    "description": "Set to true to archive (delete) a block. Set to false to un-archive (restore) a block."
                   }
-                }
+                },
+                "additionalProperties": true
               }
             }
           }

@@ -155,7 +155,7 @@ Error Responses:
     ],
   },
   {
-    "description": "Notion | Append child blocks to a page or block. Pass \`after\` with an existing block ID to insert at that position rather than at the end. Note that Notion's API has no move operation: reordering existing content means appending a copy and deleting the original, which assigns new block IDs and does not carry over comments.
+    "description": "Notion | Append child blocks to a page or block. Pass \`after\` with an existing block ID to insert at that position rather than at the end. Only \`paragraph\` and \`bulleted_list_item\` are described by this schema; to add other block types, write them as Markdown with Update a page's content as Markdown instead. Note that Notion's API has no move operation: reordering existing content means appending a copy and deleting the original, which assigns new block IDs and does not carry over comments.
 Error Responses:
 400: Bad request",
     "httpMethod": "patch",
@@ -344,7 +344,7 @@ Error Responses:
     ],
   },
   {
-    "description": "Notion | Replace a block's content in place, addressed by block ID. Prefer this over Markdown find-and-replace for targeted edits: it does not require reproducing the block's existing text, so it is unaffected by how that text renders. Get block IDs from Retrieve block children.
+    "description": "Notion | Replace a block's content in place, addressed by block ID. Prefer this over Markdown find-and-replace for targeted edits: it does not require reproducing the block's existing text, so it is unaffected by how that text renders. Put the block-type key at the root of the body — \`{"paragraph": {"rich_text": [...]}}\` — matching the block's existing type, since a block cannot change type. Get block IDs and their types from Retrieve block children.
 Error Responses:
 400: Bad request",
     "httpMethod": "patch",
@@ -352,7 +352,8 @@ Error Responses:
     "properties": [
       "archived",
       "block_id",
-      "type",
+      "bulleted_list_item",
+      "paragraph",
     ],
     "required": [
       "block_id",

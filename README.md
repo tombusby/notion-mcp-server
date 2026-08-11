@@ -98,6 +98,14 @@ retrieve-a-block(block_id)     → re-check `last_edited_time` before writing
 
 Block IDs sidestep all three limits: deleting fifteen sections is fifteen `delete-a-block` calls that never touch the section text. `retrieve-page-markdown` also accepts a **block** ID, so a single section can be read without fetching the whole page.
 
+`update-a-block` takes the block-type key at the **root** of the body, matching the block's existing type — a block cannot change type:
+
+```json
+{ "paragraph": { "rich_text": [{ "type": "text", "text": { "content": "New text" } }] } }
+```
+
+Two caveats on what you can *write*. `patch-block-children` only describes `paragraph` and `bulleted_list_item` in its schema, so adding a heading or callout is better done by writing Markdown through `update-page-markdown` ([#282](https://github.com/makenotion/notion-mcp-server/issues/282)). And `update-a-block` accepts any block type, but only `rich_text` and `to_do`'s `checked` are updatable — Notion's own constraint, not the spec's.
+
 **Reordering is not supported.** Notion's API has no block-move operation — only `POST /v1/pages/{page_id}/move` for whole pages. Reordering content within a page means appending a copy with `patch-block-children` and deleting the original, which assigns new block IDs and does not carry comments over. Plan around it rather than expecting a move.
 
 ### Find-and-replace safety checks

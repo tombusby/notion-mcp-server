@@ -84,6 +84,55 @@ describe('Notion page-markdown tools', () => {
     })
   })
 
+  /**
+   * Regression guard for makenotion/notion-mcp-server#271: the spec used to
+   * declare a `type` object in the update-a-block request body, so the only
+   * shape the generated tool could send was `{"type": {"paragraph": …}}` —
+   * which Notion rejects with a 400 on every call, leaving the tool able to do
+   * nothing but archive. Block-type keys belong at the body root.
+   */
+  describe('update-a-block request shape', () => {
+    const updateABlock = () => byName('update-a-block')!
+
+    it('does not wrap block content under a `type` body field', () => {
+      const properties = updateABlock().inputSchema.properties ?? {}
+      expect(Object.keys(properties)).not.toContain('type')
+    })
+
+    it('accepts block-type keys at the root of the body', () => {
+      const properties = updateABlock().inputSchema.properties ?? {}
+      expect(Object.keys(properties)).toContain('paragraph')
+      expect(Object.keys(properties)).toContain('bulleted_list_item')
+    })
+
+    it('models a block-type value as { rich_text: [...] }', () => {
+      // The converter wraps object properties in an anyOf with a string
+      // alternative, to tolerate clients that JSON-encode nested arguments.
+      const paragraph = (updateABlock().inputSchema.properties as any).paragraph
+      const objectBranch = (paragraph.anyOf ?? [paragraph]).find((b: any) => b.type === 'object')
+      expect(objectBranch.properties.rich_text.type).toBe('array')
+      expect(objectBranch.required).toContain('rich_text')
+    })
+
+    it('permits block types the spec does not enumerate', () => {
+      // Only paragraph and bulleted_list_item are modelled, but headings,
+      // to_do, callout and the rest take the same shape and must get through.
+      // An absent additionalProperties permits them; an explicit false would not.
+      expect((updateABlock().inputSchema as any).additionalProperties).not.toBe(false)
+    })
+
+    it('tells the model where the block-type key goes, since the schema cannot', () => {
+      // The body-level description is not carried onto the input schema, so
+      // the shape has to be stated in the summary to reach the model at all.
+      expect(updateABlock().description).toMatch(/root of the body/)
+    })
+
+    it('does not default `archived` to true, which would archive on any edit', () => {
+      const archived = (updateABlock().inputSchema.properties as any).archived
+      expect(archived.default).toBeUndefined()
+    })
+  })
+
   describe('find-and-replace hazard documentation', () => {
     const updateContent = () => {
       const update = byName('update-page-markdown')!
