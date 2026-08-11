@@ -3,6 +3,7 @@ import { OpenAPIV3 } from 'openapi-types'
 import { HttpClient, HttpClientError } from '../../client/http-client'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
+import { contentHash } from '../content-hash'
 
 // Mock the dependencies
 vi.mock('../../client/http-client')
@@ -164,6 +165,110 @@ describe('MCPProxy', () => {
 
         expect(payload.data).toBe('plain text failure')
         expect(payload.status).toBe(500)
+      })
+    })
+
+    describe('content-hash preconditions', () => {
+      const block = {
+        object: 'block',
+        id: 'block-1',
+        type: 'paragraph',
+        has_children: false,
+        paragraph: {
+          color: 'default',
+          rich_text: [
+            {
+              type: 'text',
+              text: { content: 'original', link: null },
+              annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: 'default' },
+              plain_text: 'original',
+              href: null,
+            },
+          ],
+        },
+      }
+
+      function setupBlockOperations() {
+        ;(proxy as any).openApiLookup = {
+          'API-update-a-block': {
+            operationId: 'update-a-block',
+            responses: { '200': { description: 'ok' } },
+            method: 'patch',
+            path: '/v1/blocks/{block_id}',
+          },
+          'API-retrieve-a-block': {
+            operationId: 'retrieve-a-block',
+            responses: { '200': { description: 'ok' } },
+            method: 'get',
+            path: '/v1/blocks/{block_id}',
+          },
+          'API-get-block-children': {
+            operationId: 'get-block-children',
+            responses: { '200': { description: 'ok' } },
+            method: 'get',
+            path: '/v1/blocks/{block_id}/children',
+          },
+        }
+        const server = (proxy as any).server
+        const handlers = server.setRequestHandler.mock.calls
+          .flatMap((x: unknown[]) => x)
+          .filter((x: unknown) => typeof x === 'function')
+        return handlers[1]
+      }
+
+      it('never forwards the hash param to Notion', async () => {
+        // executeOperation puts any undeclared param into the request body, so
+        // a hash that leaked this far would be sent to Notion and rejected.
+        const execute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>
+        execute.mockImplementation(async (operation: any) =>
+          operation.operationId === 'retrieve-a-block'
+            ? { data: block, status: 200, headers: new Headers() }
+            : { data: block, status: 200, headers: new Headers() },
+        )
+        const callToolHandler = setupBlockOperations()
+
+        await callToolHandler({
+          params: {
+            name: 'API-update-a-block',
+            arguments: { block_id: 'block-1', expected_content_hash: contentHash(block), paragraph: { rich_text: [] } },
+          },
+        })
+
+        const writeCall = execute.mock.calls.find(([op]: any[]) => op.operationId === 'update-a-block')
+        expect(writeCall).toBeDefined()
+        expect(writeCall![1]).not.toHaveProperty('expected_content_hash')
+      })
+
+      it('returns a stale write as a structured 409 without calling Notion', async () => {
+        const execute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>
+        execute.mockImplementation(async () => ({ data: block, status: 200, headers: new Headers() }))
+        const callToolHandler = setupBlockOperations()
+
+        const result = await callToolHandler({
+          params: {
+            name: 'API-update-a-block',
+            arguments: { block_id: 'block-1', expected_content_hash: 'staleaaaaaaaaaaa', paragraph: { rich_text: [] } },
+          },
+        })
+
+        const payload = JSON.parse(result.content[0].text)
+        expect(payload).toMatchObject({ status: 409, code: 'stale_content_hash', block_id: 'block-1' })
+        // The write must not have been attempted.
+        expect(execute.mock.calls.some(([op]: any[]) => op.operationId === 'update-a-block')).toBe(false)
+      })
+
+      it('annotates a retrieved block with its hashes', async () => {
+        const execute = HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>
+        execute.mockImplementation(async () => ({ data: block, status: 200, headers: new Headers() }))
+        const callToolHandler = setupBlockOperations()
+
+        const result = await callToolHandler({
+          params: { name: 'API-retrieve-a-block', arguments: { block_id: 'block-1' } },
+        })
+
+        const payload = JSON.parse(result.content[0].text)
+        expect(payload.content_hash).toBe(contentHash(block))
+        expect(payload.subtree_hash).toBe(contentHash(block))
       })
     })
 

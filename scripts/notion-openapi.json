@@ -735,7 +735,7 @@
       },
       "patch": {
         "summary": "Append child blocks to a page or block. Pass `after` with an existing block ID to insert at that position rather than at the end. Only `paragraph` and `bulleted_list_item` are described by this schema; to add other block types, write them as Markdown with Update a page's content as Markdown instead. Note that Notion's API has no move operation: reordering existing content means appending a copy and deleting the original, which assigns new block IDs and does not carry over comments.",
-        "description": "",
+        "description": "\n\nREQUIRED WHEN USING `after`: `expected_anchor_hash` must be the `content_hash` of the anchor block named in `after`. Do not construct or modify it. A 409 with code `stale_anchor_hash` means the anchor changed since your read. Appending at the end of the parent needs no hash.",
         "operationId": "patch-block-children",
         "parameters": [
           {
@@ -770,6 +770,10 @@
                   "after": {
                     "type": "string",
                     "description": "The ID of the existing block that the new block should be appended after. Get block IDs from Retrieve block children. Omit this to append at the end, which is why child pages created via the API land at the bottom of their parent."
+                  },
+                  "expected_anchor_hash": {
+                    "type": "string",
+                    "description": "The `content_hash` of the block named in `after`. Required whenever `after` is supplied; ignored otherwise. Appending at the end needs no precondition because it destroys nothing."
                   }
                 }
               }
@@ -880,7 +884,7 @@
       },
       "patch": {
         "summary": "Replace a block's content in place, addressed by block ID. Prefer this over Markdown find-and-replace for targeted edits: it does not require reproducing the block's existing text, so it is unaffected by how that text renders. Put the block-type key at the root of the body — `{\"paragraph\": {\"rich_text\": [...]}}` — matching the block's existing type, since a block cannot change type. Get block IDs and their types from Retrieve block children.",
-        "description": "",
+        "description": "\n\nREQUIRED: `expected_content_hash` must be the `content_hash` value returned when you read the block. Do not construct or modify it. A 409 with code `stale_content_hash` means the block changed since your read: re-read it, decide whether your edit still applies, and retry with the new hash.",
         "operationId": "update-a-block",
         "parameters": [
           {
@@ -938,9 +942,16 @@
                   "archived": {
                     "type": "boolean",
                     "description": "Set to true to archive (delete) a block. Set to false to un-archive (restore) a block."
+                  },
+                  "expected_content_hash": {
+                    "type": "string",
+                    "description": "The `content_hash` returned when you read this block. Required. Guards against overwriting an edit made since your read."
                   }
                 },
-                "additionalProperties": true
+                "additionalProperties": true,
+                "required": [
+                  "expected_content_hash"
+                ]
               }
             }
           }
@@ -988,7 +999,7 @@
       },
       "delete": {
         "summary": "Delete a block by ID, along with its children. This is how to remove a section without reproducing its text — read the IDs with Retrieve block children first, then delete each one. Deleting many blocks by ID is far more reliable than a Markdown find-and-replace that has to match every character of the content being removed.",
-        "description": "",
+        "description": "\n\nREQUIRED: `expected_subtree_hash` must be the `subtree_hash (from API-retrieve-a-block)` value returned when you read the block. Do not construct or modify it. A 409 with code `stale_subtree_hash` means the block changed since your read: re-read it, decide whether your edit still applies, and retry with the new hash.",
         "operationId": "delete-a-block",
         "parameters": [
           {
@@ -1002,6 +1013,15 @@
           },
           {
             "$ref": "#/components/parameters/notionVersion"
+          },
+          {
+            "name": "expected_subtree_hash",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `subtree_hash` returned by API-retrieve-a-block for this block. Required. Covers the block and everything beneath it, because deleting a container destroys its whole subtree."
           }
         ],
         "responses": {
@@ -2429,7 +2449,7 @@
       },
       "patch": {
         "summary": "Update a page's content as Markdown. Use `replace_content` to overwrite a whole page or block. For targeted edits to a large page, prefer addressing blocks by ID — Retrieve block children, then Update a block, Delete a block or Append block children — because find-and-replace has to reproduce existing text exactly and cannot match across block boundaries.",
-        "description": "Update the content of a Notion page using enhanced Markdown. Prefer `replace_content` to overwrite the whole page or `update_content` for targeted find-and-replace edits.",
+        "description": "Update the content of a Notion page using enhanced Markdown. Prefer `replace_content` to overwrite the whole page or `update_content` for targeted find-and-replace edits.\n\nPREFER BLOCK-ID EDITS FOR TARGETED CHANGES. This tool rewrites by matching text, so it cannot be guarded by a content hash and will not warn you if the page changed since you read it. For editing or deleting specific existing content, use API-update-a-block / API-delete-a-block, which take a block ID and a content hash and refuse a stale write. Use this tool for bulk rewrites and for content the structured block API cannot express.",
         "operationId": "update-page-markdown",
         "tags": [
           "Pages"

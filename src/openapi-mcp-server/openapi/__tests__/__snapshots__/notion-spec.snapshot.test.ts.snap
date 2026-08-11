@@ -70,9 +70,11 @@ Error Responses:
     "name": "delete-a-block",
     "properties": [
       "block_id",
+      "expected_subtree_hash",
     ],
     "required": [
       "block_id",
+      "expected_subtree_hash",
     ],
   },
   {
@@ -164,6 +166,7 @@ Error Responses:
       "after",
       "block_id",
       "children",
+      "expected_anchor_hash",
     ],
     "required": [
       "block_id",
@@ -353,10 +356,12 @@ Error Responses:
       "archived",
       "block_id",
       "bulleted_list_item",
+      "expected_content_hash",
       "paragraph",
     ],
     "required": [
       "block_id",
+      "expected_content_hash",
     ],
   },
   {

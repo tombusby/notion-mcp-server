@@ -4,6 +4,8 @@ import { JSONSchema7 as IJsonSchema } from 'json-schema'
 import { OpenAPIToMCPConverter } from '../openapi/parser'
 import { HttpClient, HttpClientError } from '../client/http-client'
 import { ContentUpdate, validateContentUpdates } from './content-updates'
+import { annotateReadResponse, BlockReader, enforcePrecondition, PreconditionError } from './block-preconditions'
+import { Block } from './content-hash'
 import { OpenAPIV3 } from 'openapi-types'
 import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 
@@ -239,19 +241,37 @@ export class MCPProxy {
       }
 
       try {
+        // Block writes carry a content-hash precondition. Verified before the
+        // request is sent, so a stale write leaves nothing written. Returns
+        // the params with the server-side hash arguments removed — they are
+        // ours, and executeOperation would otherwise put them in the request
+        // body and have Notion reject the call.
+        const forwardParams = await enforcePrecondition(operation.operationId, deserializedParams, this.blockReader())
+
         // Execute the operation
-        const response = await this.httpClient.executeOperation(operation, deserializedParams)
+        const response = await this.httpClient.executeOperation(operation, forwardParams)
+
+        // Attach the hashes a subsequent write will require.
+        const data = await annotateReadResponse(operation.operationId, response.data, this.blockReader())
 
         // Convert response to MCP format
         return {
           content: [
             {
               type: 'text', // currently this is the only type that seems to be used by mcp server
-              text: JSON.stringify(response.data), // TODO: pass through the http status code text?
+              text: JSON.stringify(data), // TODO: pass through the http status code text?
             },
           ],
         }
       } catch (error) {
+        if (error instanceof PreconditionError) {
+          // A refused write is an expected outcome, not a server fault: report
+          // it as a structured tool result the caller can act on directly.
+          console.error('Precondition failed', { status: error.status, code: error.payload.code })
+          return {
+            content: [{ type: 'text', text: JSON.stringify(error.payload) }],
+          }
+        }
         console.error('Error in tool call', error instanceof Error ? error.message : 'Unknown error')
         if (error instanceof HttpClientError) {
           console.error('HttpClientError encountered, returning structured error', { status: error.status })
@@ -285,6 +305,41 @@ export class MCPProxy {
 
   private findOperation(operationId: string): (OpenAPIV3.OperationObject & { method: string; path: string }) | null {
     return this.openApiLookup[operationId] ?? null
+  }
+
+  /**
+   * The reads the precondition layer performs on the caller's behalf, routed
+   * through the same HttpClient (and so the same per-connection Notion
+   * credentials) as the tool call that triggered them.
+   */
+  private blockReader(): BlockReader {
+    const retrieve = this.findOperation('API-retrieve-a-block')
+    const children = this.findOperation('API-get-block-children')
+    return {
+      retrieveBlock: async (blockId: string): Promise<Block> => {
+        if (!retrieve) throw new Error('retrieve-a-block operation is not available')
+        const response = await this.httpClient.executeOperation(retrieve, { block_id: blockId })
+        return response.data as Block
+      },
+      listChildren: async (blockId: string): Promise<Block[]> => {
+        if (!children) throw new Error('get-block-children operation is not available')
+        const collected: Block[] = []
+        let cursor: string | undefined
+        // Notion pages children 100 at a time. A partial listing would produce
+        // a subtree hash over less than the subtree, so follow the cursor.
+        do {
+          const response = await this.httpClient.executeOperation(children, {
+            block_id: blockId,
+            page_size: 100,
+            ...(cursor ? { start_cursor: cursor } : {}),
+          })
+          const data = response.data as { results?: Block[]; next_cursor?: string | null; has_more?: boolean }
+          collected.push(...(data.results ?? []))
+          cursor = data.has_more && data.next_cursor ? data.next_cursor : undefined
+        } while (cursor)
+        return collected
+      },
+    }
   }
 
   private parseHeadersFromEnv(): Record<string, string> {
