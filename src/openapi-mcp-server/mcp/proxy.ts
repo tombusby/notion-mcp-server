@@ -3,6 +3,7 @@ import { CallToolRequestSchema, JSONRPCResponse, ListToolsRequestSchema, Tool } 
 import { JSONSchema7 as IJsonSchema } from 'json-schema'
 import { OpenAPIToMCPConverter } from '../openapi/parser'
 import { HttpClient, HttpClientError } from '../client/http-client'
+import { ContentUpdate, validateContentUpdates } from './content-updates'
 import { OpenAPIV3 } from 'openapi-types'
 import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 
@@ -123,6 +124,28 @@ function unwrapJsonString(value: string): unknown {
   return value
 }
 
+/**
+ * Extract the `content_updates` batch from an `update-page-markdown` call, or
+ * null when this call is not a find-and-replace update.
+ *
+ * Only `update_content` carries interacting anchors; `replace_content` and the
+ * deprecated positional operations are left alone.
+ */
+function getContentUpdates(
+  operation: OpenAPIV3.OperationObject & { method: string; path: string },
+  params: Record<string, unknown>,
+): ContentUpdate[] | null {
+  if (operation.operationId !== 'update-page-markdown' || params.type !== 'update_content') {
+    return null
+  }
+  const updateContent = params.update_content
+  if (typeof updateContent !== 'object' || updateContent === null) {
+    return null
+  }
+  const updates = (updateContent as Record<string, unknown>).content_updates
+  return Array.isArray(updates) ? (updates as ContentUpdate[]) : null
+}
+
 // import this class, extend and return server
 export class MCPProxy {
   private server: Server
@@ -205,6 +228,15 @@ export class MCPProxy {
       // Deserialize any stringified JSON parameters (fixes double-serialization bug)
       // See: https://github.com/makenotion/notion-mcp-server/issues/176
       const deserializedParams = params ? deserializeParams(params as Record<string, unknown>) : {}
+
+      // A find-and-replace batch is applied server-side in order, against a
+      // document each preceding edit has already changed. Anchors that interact
+      // are accepted and return cleanly while replacing the wrong content, so
+      // reject them here — before the request is sent, leaving nothing written.
+      const contentUpdates = getContentUpdates(operation, deserializedParams)
+      if (contentUpdates) {
+        validateContentUpdates(contentUpdates)
+      }
 
       try {
         // Execute the operation

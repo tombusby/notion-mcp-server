@@ -63,7 +63,7 @@ Error Responses:
     ],
   },
   {
-    "description": "Notion | Delete a block
+    "description": "Notion | Delete a block by ID, along with its children. This is how to remove a section without reproducing its text — read the IDs with Retrieve block children first, then delete each one. Deleting many blocks by ID is far more reliable than a Markdown find-and-replace that has to match every character of the content being removed.
 Error Responses:
 400: Bad request",
     "httpMethod": "delete",
@@ -76,7 +76,7 @@ Error Responses:
     ],
   },
   {
-    "description": "Notion | Retrieve block children
+    "description": "Notion | Retrieve the direct children of a page or block. Each child is returned with its \`id\`, \`type\` and \`last_edited_time\`. These block IDs are how to make targeted edits: updating or deleting a block by ID avoids reproducing its exact text, which is the reliable way to edit a large page. Children are returned one level deep — recurse on a child's ID to walk nested content.
 Error Responses:
 400: Bad request",
     "httpMethod": "get",
@@ -155,7 +155,7 @@ Error Responses:
     ],
   },
   {
-    "description": "Notion | Append block children
+    "description": "Notion | Append child blocks to a page or block. Pass \`after\` with an existing block ID to insert at that position rather than at the end. Note that Notion's API has no move operation: reordering existing content means appending a copy and deleting the original, which assigns new block IDs and does not carry over comments.
 Error Responses:
 400: Bad request",
     "httpMethod": "patch",
@@ -242,7 +242,7 @@ Error Responses:
     ],
   },
   {
-    "description": "Notion | Retrieve a block
+    "description": "Notion | Retrieve a single block by ID, including its \`last_edited_time\`. Use this to confirm a block has not changed since it was read before writing to it.
 Error Responses:
 400: Bad request",
     "httpMethod": "get",
@@ -327,7 +327,7 @@ Error Responses:
     ],
   },
   {
-    "description": "Notion | Retrieve a page as Markdown
+    "description": "Notion | Retrieve a page's content as Markdown. Accepts a block ID as well as a page ID, so a single section can be read on its own instead of fetching a whole large page. The Markdown returned is display-oriented: escaping of characters such as \`*\`, \`~\` and \`#\` may differ from what is stored, so it is not guaranteed to round-trip when fed back as \`old_str\`. For edits that must be precise, address blocks by ID via Retrieve block children instead.
 Error Responses:
 400: Bad request
 403: The integration lacks the read/update content capability required for this page.
@@ -344,7 +344,7 @@ Error Responses:
     ],
   },
   {
-    "description": "Notion | Update a block
+    "description": "Notion | Replace a block's content in place, addressed by block ID. Prefer this over Markdown find-and-replace for targeted edits: it does not require reproducing the block's existing text, so it is unaffected by how that text renders. Get block IDs from Retrieve block children.
 Error Responses:
 400: Bad request",
     "httpMethod": "patch",
@@ -375,7 +375,7 @@ Error Responses:
     ],
   },
   {
-    "description": "Notion | Update a page's content as Markdown
+    "description": "Notion | Update a page's content as Markdown. Use \`replace_content\` to overwrite a whole page or block. For targeted edits to a large page, prefer addressing blocks by ID — Retrieve block children, then Update a block, Delete a block or Append block children — because find-and-replace has to reproduce existing text exactly and cannot match across block boundaries.
 Error Responses:
 400: Bad request
 403: The integration lacks the read/update content capability required for this page.

@@ -1016,4 +1016,107 @@ describe('MCPProxy', () => {
       )
     })
   })
+
+  /**
+   * An unsafe find-and-replace batch must be rejected before the request is
+   * sent, so a rejected batch is never partially applied. See content-updates.ts.
+   */
+  describe('update-page-markdown content_updates validation', () => {
+    let callToolHandler: Function
+
+    beforeEach(() => {
+      ;(HttpClient.prototype.executeOperation as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { ok: true },
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+      })
+      ;(proxy as any).openApiLookup = {
+        'API-update-page-markdown': {
+          operationId: 'update-page-markdown',
+          responses: { '200': { description: 'Success' } },
+          method: 'patch',
+          path: '/v1/pages/{page_id}/markdown',
+        },
+        'API-retrieve-page-markdown': {
+          operationId: 'retrieve-page-markdown',
+          responses: { '200': { description: 'Success' } },
+          method: 'get',
+          path: '/v1/pages/{page_id}/markdown',
+        },
+      }
+
+      const server = (proxy as any).server
+      const handlers = server.setRequestHandler.mock.calls
+        .flatMap((x: unknown[]) => x)
+        .filter((x: unknown) => typeof x === 'function')
+      callToolHandler = handlers[1]
+    })
+
+    const callUpdate = (contentUpdates: unknown[]) =>
+      callToolHandler({
+        params: {
+          name: 'API-update-page-markdown',
+          arguments: {
+            page_id: 'page-1',
+            type: 'update_content',
+            update_content: { content_updates: contentUpdates },
+          },
+        },
+      })
+
+    it('rejects a batch whose later anchor matches an earlier edit output, without calling the API', async () => {
+      await expect(
+        callUpdate([
+          { old_str: 'Original heading', new_str: 'Revised heading' },
+          { old_str: 'Revised heading', new_str: 'Something else' },
+        ]),
+      ).rejects.toThrow(/appears in the new_str of content_updates\[0\]/)
+
+      expect(HttpClient.prototype.executeOperation).not.toHaveBeenCalled()
+    })
+
+    it('rejects a multi-block anchor without calling the API', async () => {
+      await expect(
+        callUpdate([{ old_str: 'First para.\n\nSecond para.', new_str: 'Merged.' }]),
+      ).rejects.toThrow(/spans 2 blocks/)
+
+      expect(HttpClient.prototype.executeOperation).not.toHaveBeenCalled()
+    })
+
+    it('allows a batch with disjoint anchors through to the API', async () => {
+      await callUpdate([
+        { old_str: 'the first paragraph', new_str: 'the opening paragraph' },
+        { old_str: 'an unrelated line', new_str: 'a rewritten line' },
+      ])
+
+      expect(HttpClient.prototype.executeOperation).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not validate replace_content, which has no anchors', async () => {
+      await callToolHandler({
+        params: {
+          name: 'API-update-page-markdown',
+          arguments: {
+            page_id: 'page-1',
+            type: 'replace_content',
+            // Would be rejected as a multi-block anchor if it were an old_str.
+            replace_content: { new_str: 'First para.\n\nSecond para.' },
+          },
+        },
+      })
+
+      expect(HttpClient.prototype.executeOperation).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not validate unrelated operations', async () => {
+      await callToolHandler({
+        params: {
+          name: 'API-retrieve-page-markdown',
+          arguments: { page_id: 'page-1' },
+        },
+      })
+
+      expect(HttpClient.prototype.executeOperation).toHaveBeenCalledTimes(1)
+    })
+  })
 })

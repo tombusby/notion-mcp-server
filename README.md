@@ -74,9 +74,44 @@ If you have hardcoded tool names or prompts that reference the old database tool
 The server exposes two tools for working with page content as enhanced Markdown instead of block JSON, which is significantly more token-efficient for AI agents:
 
 - `retrieve-page-markdown` — Read a page's full content as Markdown (`GET /v1/pages/{page_id}/markdown`). Pass `include_transcript: true` to inline meeting-note transcripts.
-- `update-page-markdown` — Edit a page's content with Markdown (`PATCH /v1/pages/{page_id}/markdown`). Prefer `replace_content` to overwrite the whole page, or `update_content` for targeted find-and-replace edits.
+- `update-page-markdown` — Edit a page's content with Markdown (`PATCH /v1/pages/{page_id}/markdown`). Use `replace_content` to overwrite the whole page, or `update_content` for find-and-replace edits. For targeted edits to a large page, prefer [editing by block ID](#editing-by-block-id).
 
 These endpoints require Notion API version `2026-03-11`. The server now sources the `Notion-Version` header **per operation** from the OpenAPI spec, so these tools use `2026-03-11` while the rest of the API continues to use `2025-09-03` — no configuration needed. If you set `Notion-Version` yourself via `OPENAPI_MCP_HEADERS`, your value takes precedence for every tool.
+
+### Editing by block ID
+
+Markdown find-and-replace is convenient, but it anchors edits to *content*: `old_str` has to reproduce the existing text exactly. That gets fragile on large pages, and it has three limits worth knowing:
+
+- **An `old_str` cannot span blocks.** Text either side of a blank line lives in different blocks, and the API matches within a single block only — such an anchor never matches, however carefully it is reproduced.
+- **Rendered Markdown may not round-trip.** Escaping of characters like `*`, `~` and `#` can differ from what is stored, so an anchor copied out of `retrieve-page-markdown` may not match when fed back in. Nested bold/italic (common in bibliographies) is the usual culprit.
+- **Table rows are stored one cell per line.** A row rewritten as a single line will not match.
+
+For anything targeted — and for any bulk restructuring — address blocks by **ID** instead:
+
+```
+get-block-children(block_id)   → each child's `id`, `type`, `last_edited_time`
+update-a-block(block_id)       → replace one block's content in place
+delete-a-block(block_id)       → remove a block and its children
+patch-block-children(block_id, after: <id>)  → insert at a position
+retrieve-a-block(block_id)     → re-check `last_edited_time` before writing
+```
+
+Block IDs sidestep all three limits: deleting fifteen sections is fifteen `delete-a-block` calls that never touch the section text. `retrieve-page-markdown` also accepts a **block** ID, so a single section can be read without fetching the whole page.
+
+**Reordering is not supported.** Notion's API has no block-move operation — only `POST /v1/pages/{page_id}/move` for whole pages. Reordering content within a page means appending a copy with `patch-block-children` and deleting the original, which assigns new block IDs and does not carry comments over. Plan around it rather than expecting a move.
+
+### Find-and-replace safety checks
+
+`update_content` batches are applied server-side, in order, against a document each preceding edit has already changed. Nothing in the request says where an anchor is meant to land, so a batch whose anchors interact is accepted and returns cleanly while replacing the wrong content — silent loss, with a success response.
+
+Before sending, the server rejects batches where:
+
+- an `old_str` spans a blank line (multi-block, can never match);
+- a later `old_str` appears in an earlier edit's `new_str` (it would match text the earlier edit just wrote);
+- two anchors overlap, or are identical without `replace_all_matches`;
+- an `old_str` is empty, or identical to its `new_str`.
+
+Rejection happens before the request is sent, so nothing is written and the batch is never partially applied. These checks compare the strings in the batch against each other, not against the page — two anchors that are unrelated as strings but land next to each other in the document cannot be detected this way. Use block IDs when an edit has to be exact.
 
 ---
 

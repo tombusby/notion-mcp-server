@@ -657,7 +657,7 @@
     },
     "/v1/blocks/{block_id}/children": {
       "get": {
-        "summary": "Retrieve block children",
+        "summary": "Retrieve the direct children of a page or block. Each child is returned with its `id`, `type` and `last_edited_time`. These block IDs are how to make targeted edits: updating or deleting a block by ID avoids reproducing its exact text, which is the reliable way to edit a large page. Children are returned one level deep — recurse on a child's ID to walk nested content.",
         "description": "",
         "operationId": "get-block-children",
         "parameters": [
@@ -734,7 +734,7 @@
         "security": []
       },
       "patch": {
-        "summary": "Append block children",
+        "summary": "Append child blocks to a page or block. Pass `after` with an existing block ID to insert at that position rather than at the end. Note that Notion's API has no move operation: reordering existing content means appending a copy and deleting the original, which assigns new block IDs and does not carry over comments.",
         "description": "",
         "operationId": "patch-block-children",
         "parameters": [
@@ -769,7 +769,7 @@
                   },
                   "after": {
                     "type": "string",
-                    "description": "The ID of the existing block that the new block should be appended after."
+                    "description": "The ID of the existing block that the new block should be appended after. Get block IDs from Retrieve block children. Omit this to append at the end, which is why child pages created via the API land at the bottom of their parent."
                   }
                 }
               }
@@ -820,7 +820,7 @@
     },
     "/v1/blocks/{block_id}": {
       "get": {
-        "summary": "Retrieve a block",
+        "summary": "Retrieve a single block by ID, including its `last_edited_time`. Use this to confirm a block has not changed since it was read before writing to it.",
         "description": "",
         "operationId": "retrieve-a-block",
         "parameters": [
@@ -879,7 +879,7 @@
         "security": []
       },
       "patch": {
-        "summary": "Update a block",
+        "summary": "Replace a block's content in place, addressed by block ID. Prefer this over Markdown find-and-replace for targeted edits: it does not require reproducing the block's existing text, so it is unaffected by how that text renders. Get block IDs from Retrieve block children.",
         "description": "",
         "operationId": "update-a-block",
         "parameters": [
@@ -959,7 +959,7 @@
         "security": []
       },
       "delete": {
-        "summary": "Delete a block",
+        "summary": "Delete a block by ID, along with its children. This is how to remove a section without reproducing its text — read the IDs with Retrieve block children first, then delete each one. Deleting many blocks by ID is far more reliable than a Markdown find-and-replace that has to match every character of the content being removed.",
         "description": "",
         "operationId": "delete-a-block",
         "parameters": [
@@ -2215,7 +2215,7 @@
     },
     "/v1/pages/{page_id}/markdown": {
       "get": {
-        "summary": "Retrieve a page as Markdown",
+        "summary": "Retrieve a page's content as Markdown. Accepts a block ID as well as a page ID, so a single section can be read on its own instead of fetching a whole large page. The Markdown returned is display-oriented: escaping of characters such as `*`, `~` and `#` may differ from what is stored, so it is not guaranteed to round-trip when fed back as `old_str`. For edits that must be precise, address blocks by ID via Retrieve block children instead.",
         "description": "Retrieve the full content of a Notion page rendered as enhanced Markdown. Designed for agentic and developer tools that work natively with Markdown instead of the block JSON returned by Retrieve block children.",
         "operationId": "retrieve-page-markdown",
         "tags": [
@@ -2400,7 +2400,7 @@
         "security": []
       },
       "patch": {
-        "summary": "Update a page's content as Markdown",
+        "summary": "Update a page's content as Markdown. Use `replace_content` to overwrite a whole page or block. For targeted edits to a large page, prefer addressing blocks by ID — Retrieve block children, then Update a block, Delete a block or Append block children — because find-and-replace has to reproduce existing text exactly and cannot match across block boundaries.",
         "description": "Update the content of a Notion page using enhanced Markdown. Prefer `replace_content` to overwrite the whole page or `update_content` for targeted find-and-replace edits.",
         "operationId": "update-page-markdown",
         "tags": [
@@ -2476,7 +2476,7 @@
                       "content_updates": {
                         "type": "array",
                         "maxItems": 100,
-                        "description": "Up to 100 find-and-replace edits applied in order.",
+                        "description": "Up to 100 find-and-replace edits, applied in order. Each edit runs against the document as the previous edits have already left it, so two anchors that overlap — or an `old_str` that matches text an earlier edit just produced — will not do what you intend and can silently drop content. Keep the anchors in one batch disjoint and well separated; when edits are close together, make them one larger edit or address the blocks by ID instead.",
                         "items": {
                           "type": "object",
                           "required": [
@@ -2486,7 +2486,7 @@
                           "properties": {
                             "old_str": {
                               "type": "string",
-                              "description": "Exact existing Markdown text to find."
+                              "description": "Exact existing Markdown text to find. Must fall within a single block: text separated by a blank line belongs to a different block and will never match, however exactly it is reproduced. Table rows are stored one cell per line, so a row rewritten as a single line will not match either. Because rendered Markdown may escape characters differently from what is stored, an anchor containing `*`, `~`, `#` or nested bold/italic can fail to match — address the block by ID instead of guessing at the escaping."
                             },
                             "new_str": {
                               "type": "string",

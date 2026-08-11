@@ -51,4 +51,60 @@ describe('Notion page-markdown tools', () => {
     expect(updateProps).toContain('replace_content')
     expect(updateProps).toContain('update_content')
   })
+
+  /**
+   * Only `summary` reaches the model as a tool description (parser.ts builds it
+   * from `operation.summary || operation.description`), and per-property
+   * descriptions survive on the input schema. These assertions keep the
+   * block-addressing guidance from being silently dropped by a future spec
+   * regeneration — without it, nothing tells the model that block IDs exist.
+   */
+  describe('block-addressing guidance', () => {
+    it('tells the model that block children carry IDs usable for targeted edits', () => {
+      const description = byName('get-block-children')!.description
+      expect(description).toMatch(/block ID/i)
+      expect(description).toMatch(/last_edited_time/)
+    })
+
+    it('steers the block mutation tools away from find-and-replace', () => {
+      expect(byName('update-a-block')!.description).toMatch(/Retrieve block children/)
+      expect(byName('delete-a-block')!.description).toMatch(/Retrieve block children/)
+    })
+
+    it('documents that `after` positions an append, and that there is no move operation', () => {
+      expect(byName('patch-block-children')!.description).toMatch(/no move operation/i)
+    })
+
+    it('warns that retrieved Markdown is not guaranteed to round-trip', () => {
+      expect(byName('retrieve-page-markdown')!.description).toMatch(/round-trip/i)
+    })
+
+    it('points update-page-markdown at block IDs for targeted edits', () => {
+      expect(byName('update-page-markdown')!.description).toMatch(/Retrieve block children/)
+    })
+  })
+
+  describe('find-and-replace hazard documentation', () => {
+    const updateContent = () => {
+      const update = byName('update-page-markdown')!
+      const schema = (update.inputSchema.properties as any).update_content
+      // The request body is a union over the edit operations; find the branch
+      // carrying content_updates rather than depending on its position.
+      const branches = schema.anyOf ?? [schema]
+      return branches.find((b: any) => b?.properties?.content_updates)?.properties
+    }
+
+    it('warns on content_updates that edits apply in order and can drop content', () => {
+      const description = updateContent().content_updates.description
+      expect(description).toMatch(/in order/)
+      expect(description).toMatch(/silently/i)
+    })
+
+    it('documents the single-block constraint and table-row storage on old_str', () => {
+      const description = updateContent().content_updates.items.properties.old_str.description
+      expect(description).toMatch(/single block/i)
+      expect(description).toMatch(/blank line/i)
+      expect(description).toMatch(/table rows/i)
+    })
+  })
 })
