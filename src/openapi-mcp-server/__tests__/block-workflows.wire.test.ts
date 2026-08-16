@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeAll, beforeEach, afterAll } from 'vitest'
-import { callTool, seq, withNotionMcp, type Harness } from './mcp-harness'
+import { callTool, callToolRaw, seq, withNotionMcp, type Harness } from './mcp-harness'
 import { GRANDCHILD, LEAF, PAGE_ID, TOGGLE, TOGGLE_CHILD, WIDE, WIDE_CHILD_COUNT } from './notion-fake'
 
 /**
@@ -156,7 +156,7 @@ describe('block workflows (wire level)', () => {
       const { content_hash } = await hashesFor(LEAF)
       h.fake.store.setBlockText(LEAF, 'changed by someone else')
 
-      const result = await callTool(h.client, 'API-update-a-block', {
+      const { data: result, isError } = await callToolRaw(h.client, 'API-update-a-block', {
         block_id: LEAF,
         expected_content_hash: content_hash,
         paragraph: { rich_text: [{ text: { content: 'rewritten' } }] },
@@ -165,6 +165,9 @@ describe('block workflows (wire level)', () => {
       expect(seq(h.requests)).toEqual([`GET /v1/blocks/${LEAF}`])
       expect(result.code).toBe('stale_content_hash')
       expect(result.status).toBe(409)
+      // Reported as an ordinary success, a refusal reads as "the edit landed"
+      // to anything that does not parse the payload closely.
+      expect(isError).toBe(true)
       // The caller is handed the current content so it can diff, decide and
       // retry in one round trip rather than being forced into a blind re-read.
       expect(result.current_content.paragraph.rich_text[0].plain_text).toBe('changed by someone else')
@@ -406,11 +409,29 @@ describe('block workflows (wire level)', () => {
 
       expect(result.code).toBe('object_not_found')
       expect(result.message).toBe('Could not find block.')
-      // The error branch builds `{ status: 'error', ...notionErrorBody }`, and
-      // Notion's body carries its own numeric `status` — so the spread always
-      // clobbers the literal. Pinned as the behaviour actually is; the marker
-      // that survives for callers is `code`, not `status`.
       expect(result.status).toBe(404)
+    })
+
+    it('reports the transport status even when the error body carries none', async () => {
+      // The case that used to yield the string 'error': a body with no `status`
+      // of its own left the literal in place, so the field's type depended on
+      // which error you happened to hit.
+      h.fake.failNext(503, { message: 'upstream unavailable' })
+
+      const result = await callTool(h.client, 'API-retrieve-a-block', { block_id: LEAF })
+
+      expect(result.status).toBe(503)
+      expect(result.message).toBe('upstream unavailable')
+    })
+
+    it('flags a failed call as an error at the protocol level', async () => {
+      h.fake.failNext(404, { object: 'error', status: 404, code: 'object_not_found', message: 'gone' })
+
+      const { isError } = await callToolRaw(h.client, 'API-retrieve-a-block', { block_id: LEAF })
+
+      // Otherwise a failure is indistinguishable from a success that happens to
+      // contain the word "error".
+      expect(isError).toBe(true)
     })
   })
 })

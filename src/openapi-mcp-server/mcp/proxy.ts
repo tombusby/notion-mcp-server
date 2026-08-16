@@ -265,10 +265,18 @@ export class MCPProxy {
         }
       } catch (error) {
         if (error instanceof PreconditionError) {
-          // A refused write is an expected outcome, not a server fault: report
-          // it as a structured tool result the caller can act on directly.
+          // A refused write is an expected outcome rather than a server fault,
+          // and the payload is deliberately actionable — it carries the current
+          // content so the caller can diff, decide and retry in one round trip.
+          //
+          // It is still flagged as an error, because the whole point of the
+          // guard is that a stale write is loud. Reported as an ordinary
+          // success, a refusal reads as "the edit landed" to anything that does
+          // not parse the payload closely, which is the silent data loss the
+          // precondition exists to prevent, merely moved one level up.
           console.error('Precondition failed', { status: error.status, code: error.payload.code })
           return {
+            isError: true,
             content: [{ type: 'text', text: JSON.stringify(error.payload) }],
           }
         }

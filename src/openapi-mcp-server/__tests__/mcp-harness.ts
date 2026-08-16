@@ -77,10 +77,23 @@ export async function withNotionMcp(): Promise<Harness> {
  * precondition alike — is JSON in one text block.
  */
 export async function callTool(client: Client, name: string, args: Record<string, unknown>): Promise<any> {
+  return (await callToolRaw(client, name, args)).data
+}
+
+/**
+ * As `callTool`, but keeps the result envelope so a test can assert on
+ * `isError` — the protocol-level success/failure signal, which is separate from
+ * whatever the payload says.
+ */
+export async function callToolRaw(
+  client: Client,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ data: any; isError: boolean }> {
   const result: any = await client.callTool({ name, arguments: args })
   const text = result?.content?.[0]?.text
   if (typeof text !== 'string') {
     throw new Error(`tool ${name} returned no text content: ${JSON.stringify(result)}`)
   }
-  return JSON.parse(text)
+  return { data: JSON.parse(text), isError: result.isError === true }
 }
