@@ -1,6 +1,6 @@
 import { MCPProxy } from '../proxy'
 import { OpenAPIV3 } from 'openapi-types'
-import { HttpClient } from '../../client/http-client'
+import { HttpClient, HttpClientError } from '../../client/http-client'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 
@@ -114,6 +114,56 @@ describe('MCPProxy', () => {
             text: JSON.stringify({ message: 'success' }),
           },
         ],
+      })
+    })
+
+    describe('when the Notion API returns an error', () => {
+      /** Drive a tool call whose HTTP request fails with the given payload. */
+      async function callFailing(status: number, data: unknown) {
+        ;(proxy as any).openApiLookup = {
+          'API-getTest': { operationId: 'getTest', method: 'get', path: '/test' },
+        }
+        // The module is automocked, so HttpClientError's constructor never
+        // runs and `new` would leave status/data undefined. Build an instance
+        // that still satisfies the `instanceof` check in the proxy.
+        const error = Object.create(HttpClientError.prototype)
+        Object.assign(error, { message: `HTTP ${status}`, status, data })
+        vi.mocked(HttpClient.prototype.executeOperation).mockRejectedValue(error)
+        const server = (proxy as any).server
+        const handlers = server.setRequestHandler.mock.calls
+          .flatMap((x: unknown[]) => x)
+          .filter((x: unknown) => typeof x === 'function')
+        return handlers[1]({ params: { name: 'API-getTest', arguments: {} } })
+      }
+
+      it('flags the result as an error at the protocol level', async () => {
+        const result = await callFailing(404, { object: 'error', code: 'object_not_found', status: 404 })
+
+        // Without this a failure is returned as a successful tool call whose
+        // text merely describes a failure, and no client can tell them apart
+        // without parsing a payload whose shape it cannot assume.
+        expect(result.isError).toBe(true)
+      })
+
+      it('reports the transport status, not the string "error"', async () => {
+        // A body carrying its own `status` used to overwrite the literal, while
+        // one without it left the literal in place — so the field's type
+        // depended on which failure you hit. It is now always the HTTP status.
+        const withStatus = await callFailing(404, { code: 'object_not_found', status: 404 })
+        expect(JSON.parse(withStatus.content[0].text).status).toBe(404)
+
+        const withoutStatus = await callFailing(503, { message: 'upstream unavailable' })
+        const payload = JSON.parse(withoutStatus.content[0].text)
+        expect(payload.status).toBe(503)
+        expect(payload.message).toBe('upstream unavailable')
+      })
+
+      it('preserves a non-object error body under `data`', async () => {
+        const result = await callFailing(500, 'plain text failure')
+        const payload = JSON.parse(result.content[0].text)
+
+        expect(payload.data).toBe('plain text failure')
+        expect(payload.status).toBe(500)
       })
     })
 

@@ -257,12 +257,22 @@ export class MCPProxy {
           console.error('HttpClientError encountered, returning structured error', { status: error.status })
           const data = error.data?.response?.data ?? error.data ?? {}
           return {
+            // Without this the call is reported as a success whose text merely
+            // describes a failure, leaving a client no way to tell the two
+            // apart without parsing a payload whose shape it cannot assume.
+            isError: true,
             content: [
               {
                 type: 'text',
                 text: JSON.stringify({
-                  status: 'error', // TODO: get this from http status code?
-                  ...(typeof data === 'object' ? data : { data: data }),
+                  ...(typeof data === 'object' && data !== null ? data : { data }),
+                  // Last, so it wins. This used to be the literal 'error' set
+                  // first, which every Notion error body then overwrote with its
+                  // own numeric status — leaving the field a string on the paths
+                  // where the body carried no status and a number everywhere
+                  // else. The transport status is the one thing always known, so
+                  // it is what the field reports.
+                  status: error.status,
                 }),
               },
             ],
