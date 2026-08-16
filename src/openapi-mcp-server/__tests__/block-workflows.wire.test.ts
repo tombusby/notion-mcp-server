@@ -171,6 +171,64 @@ describe('block workflows (wire level)', () => {
     })
   })
 
+  describe('hashes across read paths', () => {
+    it('accepts a hash obtained from a listing on a subsequent write', async () => {
+      // The natural workflow — list children, edit one of them — crosses two
+      // response shapes. If a listing canonicalised differently from a single
+      // retrieve, every edit made this way would 409 with nothing wrong.
+      const listing = await callTool(h.client, 'API-get-block-children', { block_id: TOGGLE })
+      const child = listing.results[0]
+      h.fake.requests.length = 0
+
+      const result = await callTool(h.client, 'API-update-a-block', {
+        block_id: child.id,
+        expected_content_hash: child.content_hash,
+        bulleted_list_item: { rich_text: [{ text: { content: 'edited from listing' } }] },
+      })
+
+      expect(result.code).toBeUndefined()
+      expect(seq(h.requests)).toEqual([`GET /v1/blocks/${child.id}`, `PATCH /v1/blocks/${child.id}`])
+    })
+
+    it('reports an unhashable subtree on read, and refuses the delete that follows', async () => {
+      // Every node in a chain has children, so each costs one unit of the walk
+      // budget; 205 of them exhausts it.
+      let parent = LEAF
+      for (let i = 0; i < 205; i++) {
+        h.fake.store.appendChild(parent, `chain-${i}`, `chain ${i}`)
+        parent = `chain-${i}`
+      }
+
+      // A read must not fail because the subtree is big — it reports the gap.
+      const read = await callTool(h.client, 'API-retrieve-a-block', { block_id: LEAF })
+      expect(read.subtree_hash).toBeNull()
+      expect(read.subtree_hash_error).toMatch(/too large to hash/)
+      expect(read.content_hash).toEqual(expect.any(String))
+
+      h.fake.requests.length = 0
+      const result = await callTool(h.client, 'API-delete-a-block', {
+        block_id: LEAF,
+        expected_subtree_hash: 'whatever-the-caller-invents',
+      })
+
+      // Refusing is the safe outcome: the guard cannot cover what it could not
+      // hash, so it must not let the delete through.
+      expect(result.code).toBe('subtree_too_large')
+      expect(seq(h.requests).some((s) => s.startsWith('DELETE'))).toBe(false)
+    })
+
+    it('attempts no write when the precondition read itself fails', async () => {
+      const result = await callTool(h.client, 'API-update-a-block', {
+        block_id: 'does-not-exist',
+        expected_content_hash: 'deadbeefdeadbeef',
+        paragraph: { rich_text: [{ text: { content: 'x' } }] },
+      })
+
+      expect(seq(h.requests)).toEqual(['GET /v1/blocks/does-not-exist'])
+      expect(result.code).toBe('object_not_found')
+    })
+  })
+
   describe('delete-a-block', () => {
     it('walks the subtree, then deletes, and never puts the hash in the query string', async () => {
       const { subtree_hash } = await hashesFor(TOGGLE)
