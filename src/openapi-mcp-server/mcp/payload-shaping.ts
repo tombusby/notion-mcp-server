@@ -234,30 +234,75 @@ function countSectionBlocks(siblings: Block[], headingIndex: number, level: numb
 }
 
 /**
+ * Split rendered page markdown into blocks.
+ *
+ * Notion separates blocks with a **single** newline, not a blank line. This is
+ * worth stating plainly because the obvious assumption is the opposite one, and
+ * getting it wrong is silent: splitting on blank lines yields one enormous
+ * "block" spanning the whole page, so a receipt would echo the document it
+ * exists to omit and `max_blocks` would never truncate anything. Verified
+ * against a real page rather than assumed.
+ *
+ * Two constructs do span lines and must not be split apart: toggles render as
+ * `<details>…</details>` with tab-indented children, and tables render as
+ * `<table>…</table>` with a line per cell. Both are accumulated whole.
+ */
+export function splitBlocks(markdown: string): string[] {
+  const blocks: string[] = []
+  let open: { lines: string[]; closer: string } | null = null
+
+  for (const line of markdown.split('\n')) {
+    if (open) {
+      open.lines.push(line)
+      if (line.trimStart().startsWith(open.closer)) {
+        blocks.push(open.lines.join('\n'))
+        open = null
+      }
+      continue
+    }
+
+    const trimmed = line.trimStart()
+    if (trimmed.startsWith('<details')) {
+      open = { lines: [line], closer: '</details>' }
+      continue
+    }
+    if (trimmed.startsWith('<table')) {
+      open = { lines: [line], closer: '</table>' }
+      continue
+    }
+    // Blank lines are separators, not content.
+    if (line.trim() === '') continue
+    blocks.push(line)
+  }
+
+  // An unterminated container still has to come back, or content vanishes.
+  if (open) blocks.push(open.lines.join('\n'))
+
+  return blocks
+}
+
+/**
  * Locate `needle` in the updated markdown and return the block containing it.
  *
- * Markdown blocks are separated by blank lines, so the enclosing block is the
- * text between the surrounding blank lines. Note this is verification of a
- * write that has already happened, never targeting: nothing is addressed by the
- * result, so a miss costs an unverified flag rather than a wrong edit.
+ * Note this is verification of a write that has already happened, never
+ * targeting: nothing is addressed by the result, so a miss costs an unverified
+ * flag rather than a wrong edit.
  */
 export function extractRegion(markdown: string, needle: string, maxChars = REGION_CHARS): string | null {
   if (!needle) return null
-  const idx = markdown.indexOf(needle)
-  if (idx === -1) return null
+  if (!markdown.includes(needle)) return null
 
-  const before = markdown.lastIndexOf('\n\n', idx)
-  const start = before === -1 ? 0 : before + 2
-  const after = markdown.indexOf('\n\n', idx + needle.length)
-  const end = after === -1 ? markdown.length : after
-
-  const region = markdown.slice(start, end)
+  // The needle may itself span blocks (a multi-line replacement), so match on
+  // the first block containing any of its lines and return that block.
+  const firstLine = needle.split('\n').find((l) => l.trim() !== '') ?? needle
+  const region = splitBlocks(markdown).find((b) => b.includes(firstLine))
+  if (region === undefined) return null
   if (region.length <= maxChars) return region
 
   // Clip around the match rather than from the start of the block, so the text
   // the caller just wrote is always the part they get to see.
-  const matchAt = idx - start
-  const half = Math.floor((maxChars - Math.min(needle.length, maxChars)) / 2)
+  const matchAt = Math.max(0, region.indexOf(firstLine))
+  const half = Math.floor((maxChars - Math.min(firstLine.length, maxChars)) / 2)
   const clipStart = Math.max(0, matchAt - half)
   const clipEnd = Math.min(region.length, clipStart + maxChars)
   return (clipStart > 0 ? '…' : '') + region.slice(clipStart, clipEnd) + (clipEnd < region.length ? '…' : '')
@@ -338,12 +383,12 @@ export function shapeMarkdownRead(data: unknown, maxBlocks: number | undefined):
   const source = data as Record<string, unknown>
   if (typeof source.markdown !== 'string') return data
 
-  const blocks = source.markdown.split(/\n{2,}/)
+  const blocks = splitBlocks(source.markdown)
   if (blocks.length <= maxBlocks) return data
 
   return {
     ...source,
-    markdown: blocks.slice(0, maxBlocks).join('\n\n'),
+    markdown: blocks.slice(0, maxBlocks).join('\n'),
     truncated: true,
     omitted_blocks: blocks.length - maxBlocks,
     truncation_note:

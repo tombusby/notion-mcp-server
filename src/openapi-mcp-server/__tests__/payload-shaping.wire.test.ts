@@ -222,10 +222,29 @@ describe('page-markdown payload shaping', () => {
         max_blocks: 2,
       })
 
-      expect(data.markdown).toBe('# Routes in\n\nThe opening paragraph of the page.')
+      // Notion separates blocks with a single newline, not a blank line.
+      // Assuming otherwise makes the whole page one block, and this feature
+      // silently stops doing anything.
+      expect(data.markdown).toBe('# Routes in\nThe opening paragraph of the page.')
       expect(data.truncated).toBe(true)
-      expect(data.omitted_blocks).toBe(5)
+      expect(data.omitted_blocks).toBe(7)
       expect(data.truncation_note).toContain('outline')
+    })
+
+    it('keeps a toggle and a table whole rather than splitting them per line', async () => {
+      // <details> and <table> render across many lines. Counting each line as a
+      // block would truncate mid-container and emit unbalanced markup.
+      const data = await callTool(h.client, 'API-retrieve-page-markdown', {
+        page_id: PAGE_ID,
+        max_blocks: 7,
+      })
+
+      const opens = (data.markdown.match(/<details>|<table/g) ?? []).length
+      const closes = (data.markdown.match(/<\/details>|<\/table>/g) ?? []).length
+      expect(opens).toBe(closes)
+      expect(data.markdown).toContain('<summary>Hidden section</summary>')
+      expect(data.markdown).toContain('</table>')
+      expect(data.omitted_blocks).toBe(2)
     })
 
     it('leaves a short page alone and does not reach Notion with the param', async () => {

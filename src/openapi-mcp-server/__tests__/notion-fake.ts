@@ -93,16 +93,34 @@ export const OUTLINE_TOGGLE = 'outline-toggle'
  * the fake does the same rather than deriving it from the blocks: deriving it
  * would quietly assert that the two views agree, which is precisely the thing
  * the real API does not guarantee.
+ *
+ * Blocks are joined with a **single** newline, and toggles and tables render as
+ * `<details>` / `<table>` with a line per child or cell. This is copied from a
+ * real response, not guessed: the fake previously used blank-line separation,
+ * which is the natural assumption and is wrong, and every test agreed with the
+ * code because both shared the mistake. The escaped `\~` and `\*` are likewise
+ * verbatim — Notion escapes literal punctuation on the way out.
  */
 const INITIAL_PAGE_MARKDOWN = [
   '# Routes in',
   'The opening paragraph of the page.',
   '## What landed',
   'A paragraph that mentions cold dread and nothing else.',
-  'Another paragraph, well separated from the first.',
+  'A span of \\~140 years, a literal # in prose, and an asterisk \\* standing alone.',
+  '<details>',
+  '<summary>Hidden section</summary>',
+  '\t### A heading inside the toggle',
+  '\tA paragraph nested one level down.',
+  '</details>',
+  '<table header-row="true">',
+  '<tr>',
+  '<td>Addressing</td>',
+  '<td>Stale read leads to</td>',
+  '</tr>',
+  '</table>',
   '## Still open',
   'A closing paragraph.',
-].join('\n\n')
+].join('\n')
 
 export class FakeStore {
   blocks = new Map<string, Block>()
