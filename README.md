@@ -73,8 +73,40 @@ If you have hardcoded tool names or prompts that reference the old database tool
 
 The server exposes two tools for working with page content as enhanced Markdown instead of block JSON, which is significantly more token-efficient for AI agents:
 
-- `retrieve-page-markdown` — Read a page's full content as Markdown (`GET /v1/pages/{page_id}/markdown`). Pass `include_transcript: true` to inline meeting-note transcripts.
+- `retrieve-page-markdown` — Read a page's full content as Markdown (`GET /v1/pages/{page_id}/markdown`). Pass `include_transcript: true` to inline meeting-note transcripts, `format: "outline"` for [headings only](#keeping-responses-small), or `max_blocks` to cap the read.
 - `update-page-markdown` — Edit a page's content with Markdown (`PATCH /v1/pages/{page_id}/markdown`). Use `replace_content` to overwrite the whole page, or `update_content` for find-and-replace edits. For targeted edits to a large page, prefer [editing by block ID](#editing-by-block-id).
+
+### Keeping responses small
+
+Notion's markdown endpoints return the **whole page** on every call, including on writes. Three small edits to a 15,000-word page therefore return roughly 45,000 words to change three paragraphs the caller already had in hand.
+
+That is a correctness problem rather than an efficiency one. Large responses evict earlier reads from an agent's context; an evicted read means it no longer holds the page state it was working from; and an edit written from a half-remembered page is a stale write. On the markdown path there is no content hash to catch one.
+
+The server trims both directions:
+
+**Writes return a receipt.** `update-page-markdown` returns the regions it changed rather than the document:
+
+```json
+{ "object": "page_markdown_update", "id": "…", "edits": 1, "verified": 1, "unverified": 0,
+  "changed": [{ "index": 0, "verified": true, "markdown": "the new text of this block only" }],
+  "markdown_omitted": true }
+```
+
+Echoing the changed region is what lets you confirm the write landed as intended — including spotting escaping corruption — without re-reading. `verified: false` means the replacement text was not found verbatim afterwards: the edit may still have been applied with different escaping, so read the block by ID to be sure. Control it with `return_content`: `changed` (default for `update_content`), `none` (default for `replace_content`), or `full` for the old behaviour.
+
+**`format: "outline"` makes locating a section cheap.** It returns headings only — each with its block ID, content hash and section size — and does not read the page body at all:
+
+```json
+{ "object": "page_outline", "id": "…", "truncated": false,
+  "outline": [{ "block_id": "…", "type": "heading_2", "level": 2, "text": "What landed",
+                "content_hash": "84fe9704dba18505", "section_blocks": 22, "has_children": false }] }
+```
+
+This is the entry point the block-ID path was missing. Editing safely needs a block ID, getting a block ID used to need a full-page read, and so the expensive read pushed callers back onto the unsafe markdown path. The workflow is now **outline → scoped read → block edit**, with no full-page read anywhere: take a `block_id` from the outline, pass it to `retrieve-page-markdown` as `page_id`, then edit with `update-a-block` using the `content_hash`.
+
+The outline walks the block tree and descends into collapsed containers, bounded by a request budget; if it stops early it sets `truncated` and says so rather than implying the page has no further headings.
+
+Two things this deliberately does not do. It does not annotate rendered Markdown with block-ID comments: Notion returns Markdown as an opaque string with no block correspondence, so aligning IDs against serialised text would reintroduce exactly the fragility block addressing exists to remove — the outline reaches the same destination without that risk. And it does not repair the Markdown escaping bug (`**Author**, *Title*` returning as `**Author, \*Title**\*`), which is produced by Notion's own serialiser: the stored blocks are correct, as `get-block-children` shows, so it is not fixable from this side.
 
 These endpoints require Notion API version `2026-03-11`. The server now sources the `Notion-Version` header **per operation** from the OpenAPI spec, so these tools use `2026-03-11` while the rest of the API continues to use `2025-09-03` — no configuration needed. If you set `Notion-Version` yourself via `OPENAPI_MCP_HEADERS`, your value takes precedence for every tool.
 

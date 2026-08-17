@@ -2263,7 +2263,7 @@
     },
     "/v1/pages/{page_id}/markdown": {
       "get": {
-        "summary": "Retrieve a page's content as Markdown. Accepts a block ID as well as a page ID, so a single section can be read on its own instead of fetching a whole large page. The Markdown returned is display-oriented: escaping of characters such as `*`, `~` and `#` may differ from what is stored, so it is not guaranteed to round-trip when fed back as `old_str`. For edits that must be precise, address blocks by ID via Retrieve block children instead.",
+        "summary": "Retrieve a page's content as Markdown. Accepts a block ID as well as a page ID, so a single section can be read on its own instead of fetching a whole large page. On a page you have not read before, start with `format: outline` to get the headings and their block IDs cheaply, then read only the section you need. The Markdown returned is display-oriented: escaping of characters such as `*`, `~` and `#` may differ from what is stored, so it is not guaranteed to round-trip when fed back as `old_str`. For edits that must be precise, address blocks by ID via Retrieve block children instead.",
         "description": "Retrieve the full content of a Notion page rendered as enhanced Markdown. Designed for agentic and developer tools that work natively with Markdown instead of the block JSON returned by Retrieve block children.",
         "operationId": "retrieve-page-markdown",
         "tags": [
@@ -2289,6 +2289,30 @@
               "default": false
             },
             "description": "Whether to include meeting note transcripts. When false (default), a placeholder with the meeting note URL is shown instead of the full transcript."
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "markdown",
+                "outline"
+              ],
+              "default": "markdown"
+            },
+            "description": "`markdown` (default) returns the page content. `outline` returns only the headings, each with its block ID, content hash and section size, and does not read the page body at all — turning `find the section I need` from a whole-page read into a few hundred tokens. The usual workflow on a large page is: read the outline, take the block ID of the section you want, pass that block ID back here as `page_id` for a scoped read, then edit with Update a block."
+          },
+          {
+            "name": "max_blocks",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Return at most this many blocks of Markdown. The response sets `truncated` and reports how many blocks were omitted. Use with `format: outline` to locate a section rather than reading blindly further."
           },
           {
             "name": "Notion-Version",
@@ -2464,6 +2488,20 @@
               "format": "uuid"
             },
             "description": "Identifier for a Notion page (or block) to read or update as markdown."
+          },
+          {
+            "name": "return_content",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "changed",
+                "none",
+                "full"
+              ]
+            },
+            "description": "How much content to return. `changed` (the default for `update_content`) returns a receipt plus only the regions this call changed, which is enough to confirm the edit landed as intended — including spotting escaping corruption — without re-reading the page. `none` (the default for `replace_content`, where you just supplied the whole content) returns the receipt alone. `full` returns the entire page, which on a large page is usually enough to evict the reads you were working from."
           },
           {
             "name": "Notion-Version",

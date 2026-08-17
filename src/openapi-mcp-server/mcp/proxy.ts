@@ -5,6 +5,13 @@ import { OpenAPIToMCPConverter } from '../openapi/parser'
 import { HttpClient, HttpClientError } from '../client/http-client'
 import { ContentUpdate, validateContentUpdates } from './content-updates'
 import { annotateReadResponse, BlockReader, enforcePrecondition, PreconditionError } from './block-preconditions'
+import {
+  buildOutline,
+  readPayloadOptions,
+  shapeMarkdownRead,
+  shapeUpdateResponse,
+  stripPayloadParams,
+} from './payload-shaping'
 import { Block } from './content-hash'
 import { OpenAPIV3 } from 'openapi-types'
 import { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
@@ -240,19 +247,38 @@ export class MCPProxy {
         validateContentUpdates(contentUpdates)
       }
 
+      // How much of the response the caller wants back. Read before the call
+      // because `format: "outline"` is answered from the block tree and never
+      // reaches the markdown endpoint at all.
+      const payloadOptions = readPayloadOptions(operation.operationId, deserializedParams, contentUpdates)
+
       try {
+        if (payloadOptions.format === 'outline') {
+          const outline = await buildOutline(String(deserializedParams.page_id ?? ''), this.blockReader())
+          return { content: [{ type: 'text', text: JSON.stringify(outline) }] }
+        }
+
         // Block writes carry a content-hash precondition. Verified before the
         // request is sent, so a stale write leaves nothing written. Returns
         // the params with the server-side hash arguments removed — they are
         // ours, and executeOperation would otherwise put them in the request
         // body and have Notion reject the call.
-        const forwardParams = await enforcePrecondition(operation.operationId, deserializedParams, this.blockReader())
+        const checkedParams = await enforcePrecondition(operation.operationId, deserializedParams, this.blockReader())
+
+        // The response-shaping params are ours too, and Notion would reject
+        // them as unknown query arguments.
+        const forwardParams = stripPayloadParams(checkedParams)
 
         // Execute the operation
         const response = await this.httpClient.executeOperation(operation, forwardParams)
 
         // Attach the hashes a subsequent write will require.
-        const data = await annotateReadResponse(operation.operationId, response.data, this.blockReader())
+        const annotated = await annotateReadResponse(operation.operationId, response.data, this.blockReader())
+
+        // Trim the page-markdown responses, which otherwise return the whole
+        // page on every call — including on writes, where the caller already
+        // holds the content it just sent.
+        const data = this.shapeResponse(operation.operationId, annotated, payloadOptions, contentUpdates)
 
         // Convert response to MCP format
         return {
@@ -309,6 +335,23 @@ export class MCPProxy {
         throw error
       }
     })
+  }
+
+  /** Apply the caller's payload-size choices to a page-markdown response. */
+  private shapeResponse(
+    operationId: string | undefined,
+    data: unknown,
+    options: ReturnType<typeof readPayloadOptions>,
+    contentUpdates: ContentUpdate[] | null,
+  ): unknown {
+    switch (operationId) {
+      case 'update-page-markdown':
+        return shapeUpdateResponse(data, contentUpdates, options.returnContent ?? 'changed')
+      case 'retrieve-page-markdown':
+        return shapeMarkdownRead(data, options.maxBlocks)
+      default:
+        return data
+    }
   }
 
   private findOperation(operationId: string): (OpenAPIV3.OperationObject & { method: string; path: string }) | null {

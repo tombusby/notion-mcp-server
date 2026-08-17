@@ -81,10 +81,34 @@ export const WIDE = 'wide-1'
 /** Deliberately more than one page of children, to exercise the cursor loop. */
 export const WIDE_CHILD_COUNT = 150
 
+export const H1_ROUTES = 'heading-routes'
+export const H2_LANDED = 'heading-landed'
+export const H2_NESTED = 'heading-nested'
+export const OUTLINE_TOGGLE = 'outline-toggle'
+
+/**
+ * The page body as Markdown, kept separately from the block tree.
+ *
+ * Notion renders markdown server-side and returns it as an opaque string, so
+ * the fake does the same rather than deriving it from the blocks: deriving it
+ * would quietly assert that the two views agree, which is precisely the thing
+ * the real API does not guarantee.
+ */
+const INITIAL_PAGE_MARKDOWN = [
+  '# Routes in',
+  'The opening paragraph of the page.',
+  '## What landed',
+  'A paragraph that mentions cold dread and nothing else.',
+  'Another paragraph, well separated from the first.',
+  '## Still open',
+  'A closing paragraph.',
+].join('\n\n')
+
 export class FakeStore {
   blocks = new Map<string, Block>()
   /** Ordered child IDs, keyed by parent ID. */
   children = new Map<string, string[]>()
+  pageMarkdown = INITIAL_PAGE_MARKDOWN
 
   constructor() {
     this.reset()
@@ -93,8 +117,22 @@ export class FakeStore {
   reset(): void {
     this.blocks.clear()
     this.children.clear()
+    this.pageMarkdown = INITIAL_PAGE_MARKDOWN
 
     this.put(block(LEAF, 'paragraph', 'a leaf paragraph'))
+
+    // A page whose top level carries headings, one of them inside a collapsed
+    // toggle — the shape an outline has to cope with on a real page.
+    this.put({ ...block(PAGE_ID, 'child_page', 'The page'), has_children: true })
+    this.put(block(H1_ROUTES, 'heading_1', 'Routes in'))
+    this.put(block('body-1', 'paragraph', 'The opening paragraph of the page.'))
+    this.put(block(H2_LANDED, 'heading_2', 'What landed'))
+    this.put(block('body-2', 'paragraph', 'A paragraph that mentions cold dread.'))
+    this.put(block('body-3', 'paragraph', 'Another paragraph.'))
+    this.put({ ...block(OUTLINE_TOGGLE, 'toggle', 'A collapsed toggle'), has_children: true })
+    this.put(block(H2_NESTED, 'heading_2', 'Hidden inside a toggle'))
+    this.children.set(PAGE_ID, [H1_ROUTES, 'body-1', H2_LANDED, 'body-2', 'body-3', OUTLINE_TOGGLE])
+    this.children.set(OUTLINE_TOGGLE, [H2_NESTED])
 
     // A toggle with a child that itself has a child, so a subtree walk that
     // only descends one level is distinguishable from one that recurses.
@@ -284,12 +322,25 @@ export function createFakeNotion(): FakeNotion {
     res.json({ ...b, archived: true, in_trash: true })
   }) as RequestHandler)
 
-  app.get('/v1/pages/:id/markdown', ((_req, res) => {
-    res.json({ object: 'markdown', markdown: '# Page\n\nSome content.\n' })
+  // Both markdown endpoints return the whole page, on reads and writes alike.
+  // That is the behaviour the payload shaping exists to trim, so the fake has
+  // to reproduce it rather than a convenient short response.
+  app.get('/v1/pages/:id/markdown', ((req, res) => {
+    res.json({ object: 'page_markdown', id: req.params.id, markdown: store.pageMarkdown, truncated: false })
   }) as RequestHandler)
 
-  app.patch('/v1/pages/:id/markdown', ((_req, res) => {
-    res.json({ object: 'markdown', markdown: '# Page\n\nEdited content.\n' })
+  app.patch('/v1/pages/:id/markdown', ((req, res) => {
+    const body = req.body ?? {}
+    if (body.type === 'replace_content') {
+      store.pageMarkdown = body.replace_content?.new_str ?? store.pageMarkdown
+    } else if (body.type === 'update_content') {
+      // Applied in order against the document each preceding edit has already
+      // changed — the same semantics as the real endpoint.
+      for (const update of body.update_content?.content_updates ?? []) {
+        store.pageMarkdown = store.pageMarkdown.replace(update.old_str, update.new_str)
+      }
+    }
+    res.json({ object: 'page_markdown', id: req.params.id, markdown: store.pageMarkdown, truncated: false })
   }) as RequestHandler)
 
   const unhandled: RequestHandler = (req, res) => {

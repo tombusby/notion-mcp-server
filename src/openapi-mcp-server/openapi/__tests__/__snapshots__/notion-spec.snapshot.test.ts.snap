@@ -330,7 +330,7 @@ Error Responses:
     ],
   },
   {
-    "description": "Notion | Retrieve a page's content as Markdown. Accepts a block ID as well as a page ID, so a single section can be read on its own instead of fetching a whole large page. The Markdown returned is display-oriented: escaping of characters such as \`*\`, \`~\` and \`#\` may differ from what is stored, so it is not guaranteed to round-trip when fed back as \`old_str\`. For edits that must be precise, address blocks by ID via Retrieve block children instead.
+    "description": "Notion | Retrieve a page's content as Markdown. Accepts a block ID as well as a page ID, so a single section can be read on its own instead of fetching a whole large page. On a page you have not read before, start with \`format: outline\` to get the headings and their block IDs cheaply, then read only the section you need. The Markdown returned is display-oriented: escaping of characters such as \`*\`, \`~\` and \`#\` may differ from what is stored, so it is not guaranteed to round-trip when fed back as \`old_str\`. For edits that must be precise, address blocks by ID via Retrieve block children instead.
 Error Responses:
 400: Bad request
 403: The integration lacks the read/update content capability required for this page.
@@ -339,7 +339,9 @@ Error Responses:
     "httpMethod": "get",
     "name": "retrieve-page-markdown",
     "properties": [
+      "format",
       "include_transcript",
+      "max_blocks",
       "page_id",
     ],
     "required": [
@@ -395,6 +397,7 @@ Error Responses:
       "page_id",
       "replace_content",
       "replace_content_range",
+      "return_content",
       "type",
       "update_content",
     ],

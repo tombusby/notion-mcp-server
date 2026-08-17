@@ -1,0 +1,353 @@
+import { Block, contentHash } from './content-hash'
+import { BlockReader } from './block-preconditions'
+import { ContentUpdate } from './content-updates'
+
+/**
+ * Response payload shaping for the page-markdown operations.
+ *
+ * Both markdown endpoints return the *whole page*, on every call. A three-edit
+ * session against a 15,000-word page therefore returns ~45,000 words to change
+ * three paragraphs the caller already had in hand.
+ *
+ * The cost is not merely comfort. Large responses evict earlier reads from the
+ * caller's context; an evicted read means the caller no longer holds the page
+ * state it was working from; and an edit written from a half-remembered page is
+ * exactly the stale write the content-hash preconditions exist to refuse. The
+ * markdown path cannot be guarded by a hash, so on that path the eviction is
+ * not caught at all.
+ *
+ * There is a second-order effect worth naming, because it is the one that
+ * actually changes behaviour. The *safe* editing path (`update-a-block`, which
+ * takes structured rich text and is immune to markdown escaping) needs a block
+ * ID, and getting a block ID needed a full-page read. Making the read expensive
+ * pushed callers onto the unsafe path. `format: "outline"` below is the cheap
+ * entry point that removes that pressure: outline -> scoped read -> block edit,
+ * with no full-page read anywhere in the sequence.
+ *
+ * What is deliberately not attempted here: annotating rendered markdown with
+ * block IDs. Notion returns markdown as an opaque string with no block
+ * correspondence, so emitting `<!--b:...-->` markers would mean fetching the
+ * block tree separately and aligning it against serialised text — reintroducing
+ * the text-matching fragility that block addressing exists to abolish. The
+ * outline gives the same destination by a route that cannot silently misalign.
+ *
+ * Likewise not attempted: the markdown escaping bug (`**Author**, *Title*`
+ * returning as `**Author, \*Title**\*`). That corruption is produced by
+ * Notion's own serialiser — the stored blocks are correct, as `get-block-children`
+ * shows — so it is not fixable from this side. It is why `verified: false`
+ * below says "may have been applied with different escaping" rather than
+ * "failed".
+ */
+
+/** Client-facing parameters, consumed here and never forwarded to Notion. */
+export const RETURN_CONTENT = 'return_content'
+export const FORMAT = 'format'
+export const MAX_BLOCKS = 'max_blocks'
+
+const PAYLOAD_PARAMS = [RETURN_CONTENT, FORMAT, MAX_BLOCKS]
+
+export type ReturnContent = 'changed' | 'none' | 'full'
+
+/**
+ * How much of a changed region to echo back. Large enough to show a whole
+ * ordinary paragraph — which is what makes the echo useful for spotting
+ * escaping corruption — and small enough that a batch of edits cannot
+ * reconstitute the page.
+ */
+const REGION_CHARS = 600
+
+/** Requests the outline walk may spend before it gives up and says so. */
+const OUTLINE_REQUEST_BUDGET = 25
+
+const HEADING_LEVELS: Record<string, number> = {
+  heading_1: 1,
+  heading_2: 2,
+  heading_3: 3,
+}
+
+/**
+ * Container types worth descending into when building an outline. Headings
+ * usually sit at the top level, but a page built from collapsed toggles hides
+ * them one level down, and an outline that missed them would send the caller
+ * straight back to a full read.
+ */
+const OUTLINE_CONTAINERS = new Set([
+  'toggle',
+  'callout',
+  'quote',
+  'column_list',
+  'column',
+  'synced_block',
+  'heading_1',
+  'heading_2',
+  'heading_3',
+])
+
+export interface PayloadOptions {
+  returnContent?: ReturnContent
+  format?: 'markdown' | 'outline'
+  maxBlocks?: number
+}
+
+/** Strip the client-facing params so they are never sent to Notion. */
+export function stripPayloadParams(params: Record<string, unknown>): Record<string, unknown> {
+  const stripped = { ...params }
+  for (const key of PAYLOAD_PARAMS) {
+    delete stripped[key]
+  }
+  return stripped
+}
+
+/**
+ * Read the shaping options off a call.
+ *
+ * `return_content` defaults to `"changed"` for a find-and-replace update and
+ * `"none"` for a whole-page replace: after `replace_content` the caller just
+ * supplied the entire content, so echoing it back tells them nothing they did
+ * not just write.
+ */
+export function readPayloadOptions(
+  operationId: string | undefined,
+  params: Record<string, unknown>,
+  contentUpdates: ContentUpdate[] | null,
+): PayloadOptions {
+  switch (operationId) {
+    case 'update-page-markdown': {
+      const raw = params[RETURN_CONTENT]
+      const returnContent =
+        raw === 'changed' || raw === 'none' || raw === 'full' ? raw : contentUpdates ? 'changed' : 'none'
+      return { returnContent }
+    }
+
+    case 'retrieve-page-markdown': {
+      const format = params[FORMAT] === 'outline' ? 'outline' : 'markdown'
+      const rawMax = params[MAX_BLOCKS]
+      const maxBlocks = typeof rawMax === 'number' && Number.isFinite(rawMax) && rawMax > 0 ? Math.floor(rawMax) : undefined
+      return { format, maxBlocks }
+    }
+
+    default:
+      return {}
+  }
+}
+
+function plainText(block: Block): string {
+  const payload = block?.type ? block[block.type] : undefined
+  const richText = payload?.rich_text
+  if (!Array.isArray(richText)) return ''
+  return richText.map((item: any) => item?.plain_text ?? item?.text?.content ?? '').join('')
+}
+
+interface OutlineEntry {
+  block_id: string
+  type: string
+  level: number
+  text: string
+  content_hash: string
+  /**
+   * Sibling blocks belonging to this section: the blocks that follow the
+   * heading up to the next heading at the same or a higher level. It is a size
+   * signal for deciding whether to read the section, not a subtree count — a
+   * recursive count would cost the very requests the outline exists to save.
+   */
+  section_blocks: number
+  /** True when the heading is toggleable and holds its section as children. */
+  has_children: boolean
+}
+
+/**
+ * Build a headings-only view of a page, with the block IDs and content hashes
+ * needed to read and then edit a section directly.
+ *
+ * This deliberately does not call the markdown endpoint at all. Asking Notion
+ * for the page and then discarding the body would pay the whole cost the
+ * outline exists to avoid; walking the block tree pays one request per
+ * container instead, and the walk is bounded.
+ */
+export async function buildOutline(
+  rootId: string,
+  reader: BlockReader,
+): Promise<Record<string, unknown>> {
+  const outline: OutlineEntry[] = []
+  const budget = { remaining: OUTLINE_REQUEST_BUDGET }
+
+  await walkForHeadings(rootId, reader, budget, outline)
+
+  return {
+    object: 'page_outline',
+    id: rootId,
+    outline,
+    // A truncated outline that did not say so would be read as "this page has
+    // no further headings", which is the one wrong answer worth guarding.
+    truncated: budget.remaining <= 0,
+    ...(budget.remaining <= 0
+      ? {
+          truncation_note:
+            `Outline walk stopped after ${OUTLINE_REQUEST_BUDGET} requests; deeper containers were not expanded. ` +
+            `Call this again with a block ID from the outline to expand that section.`,
+        }
+      : {}),
+  }
+}
+
+async function walkForHeadings(
+  parentId: string,
+  reader: BlockReader,
+  budget: { remaining: number },
+  outline: OutlineEntry[],
+): Promise<void> {
+  if (budget.remaining <= 0) return
+  budget.remaining -= 1
+
+  const siblings = await reader.listChildren(parentId)
+
+  siblings.forEach((block, index) => {
+    const level = HEADING_LEVELS[block?.type]
+    if (!level) return
+    outline.push({
+      block_id: block.id,
+      type: block.type,
+      level,
+      text: plainText(block),
+      content_hash: contentHash(block),
+      section_blocks: countSectionBlocks(siblings, index, level),
+      has_children: Boolean(block.has_children),
+    })
+  })
+
+  for (const block of siblings) {
+    if (!block?.has_children || !OUTLINE_CONTAINERS.has(block.type)) continue
+    await walkForHeadings(block.id, reader, budget, outline)
+    if (budget.remaining <= 0) return
+  }
+}
+
+/** Blocks between this heading and the next one at the same or a higher level. */
+function countSectionBlocks(siblings: Block[], headingIndex: number, level: number): number {
+  let count = 0
+  for (let i = headingIndex + 1; i < siblings.length; i++) {
+    const nextLevel = HEADING_LEVELS[siblings[i]?.type]
+    if (nextLevel && nextLevel <= level) break
+    count++
+  }
+  return count
+}
+
+/**
+ * Locate `needle` in the updated markdown and return the block containing it.
+ *
+ * Markdown blocks are separated by blank lines, so the enclosing block is the
+ * text between the surrounding blank lines. Note this is verification of a
+ * write that has already happened, never targeting: nothing is addressed by the
+ * result, so a miss costs an unverified flag rather than a wrong edit.
+ */
+export function extractRegion(markdown: string, needle: string, maxChars = REGION_CHARS): string | null {
+  if (!needle) return null
+  const idx = markdown.indexOf(needle)
+  if (idx === -1) return null
+
+  const before = markdown.lastIndexOf('\n\n', idx)
+  const start = before === -1 ? 0 : before + 2
+  const after = markdown.indexOf('\n\n', idx + needle.length)
+  const end = after === -1 ? markdown.length : after
+
+  const region = markdown.slice(start, end)
+  if (region.length <= maxChars) return region
+
+  // Clip around the match rather than from the start of the block, so the text
+  // the caller just wrote is always the part they get to see.
+  const matchAt = idx - start
+  const half = Math.floor((maxChars - Math.min(needle.length, maxChars)) / 2)
+  const clipStart = Math.max(0, matchAt - half)
+  const clipEnd = Math.min(region.length, clipStart + maxChars)
+  return (clipStart > 0 ? '…' : '') + region.slice(clipStart, clipEnd) + (clipEnd < region.length ? '…' : '')
+}
+
+/**
+ * Reduce an `update-page-markdown` response from the whole page to a receipt.
+ *
+ * The changed regions are echoed rather than dropped entirely: they are what
+ * lets a caller confirm the write landed as intended — including catching
+ * escaping corruption at the moment it happens — without a re-read. On a
+ * find-and-replace that is typically one paragraph rather than fifteen thousand
+ * words.
+ */
+export function shapeUpdateResponse(
+  data: unknown,
+  contentUpdates: ContentUpdate[] | null,
+  returnContent: ReturnContent,
+): unknown {
+  if (returnContent === 'full' || !data || typeof data !== 'object') {
+    return data
+  }
+
+  const source = data as Record<string, unknown>
+  const markdown = typeof source.markdown === 'string' ? source.markdown : ''
+
+  const receipt: Record<string, unknown> = {
+    object: 'page_markdown_update',
+    id: source.id ?? null,
+    markdown_omitted: true,
+  }
+  if (source.truncated !== undefined) receipt.truncated = source.truncated
+  if (Array.isArray(source.unknown_block_ids) && source.unknown_block_ids.length > 0) {
+    receipt.unknown_block_ids = source.unknown_block_ids
+  }
+
+  if (!contentUpdates) {
+    receipt.note = `Page content updated. Pass return_content: "full" to receive the whole page.`
+    return receipt
+  }
+
+  const changed = contentUpdates.map((update, index) => {
+    const region = markdown ? extractRegion(markdown, update?.new_str ?? '') : null
+    return region !== null
+      ? { index, verified: true, markdown: region }
+      : {
+          index,
+          verified: false,
+          old_str: update?.old_str ?? null,
+          note:
+            `Replacement text was not found verbatim in the updated page. The edit may still have been ` +
+            `applied with different escaping — Notion's markdown serialiser does not always round-trip ` +
+            `characters such as *, ~ and #. Read the block by ID to confirm.`,
+        }
+  })
+
+  const verified = changed.filter((c) => c.verified).length
+  receipt.edits = changed.length
+  receipt.verified = verified
+  receipt.unverified = changed.length - verified
+  if (returnContent === 'changed') {
+    receipt.changed = changed
+  }
+  return receipt
+}
+
+/**
+ * Cap a markdown read at `maxBlocks` blocks.
+ *
+ * Notion has no server-side limit to ask for, so this trims on arrival. That
+ * saves no bandwidth and every token — and tokens are what the caller actually
+ * runs out of.
+ */
+export function shapeMarkdownRead(data: unknown, maxBlocks: number | undefined): unknown {
+  if (maxBlocks === undefined || !data || typeof data !== 'object') {
+    return data
+  }
+  const source = data as Record<string, unknown>
+  if (typeof source.markdown !== 'string') return data
+
+  const blocks = source.markdown.split(/\n{2,}/)
+  if (blocks.length <= maxBlocks) return data
+
+  return {
+    ...source,
+    markdown: blocks.slice(0, maxBlocks).join('\n\n'),
+    truncated: true,
+    omitted_blocks: blocks.length - maxBlocks,
+    truncation_note:
+      `Showing the first ${maxBlocks} of ${blocks.length} blocks. Use format: "outline" to locate a ` +
+      `section, then read that section by passing its block ID as page_id.`,
+  }
+}
