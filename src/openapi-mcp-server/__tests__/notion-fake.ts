@@ -85,17 +85,11 @@ export const H1_ROUTES = 'heading-routes'
 export const H2_LANDED = 'heading-landed'
 export const H2_NESTED = 'heading-nested'
 export const OUTLINE_TOGGLE = 'outline-toggle'
+export const OUTLINE_TABLE = 'outline-table'
+export const H2_OPEN = 'heading-open'
 
 /**
  * The page body as Markdown, kept separately from the block tree.
- *
- * KNOWN INCONSISTENCY: the block tree and INITIAL_PAGE_MARKDOWN below are
- * independent fixtures and do not describe the same page — the Markdown has a
- * table and a trailing `## Still open` that the tree does not, so a section
- * counted from the tree and the same section counted from the Markdown differ.
- * Tests must be explicit about which one they are asserting against. Worth
- * reconciling: a fake that disagrees with itself is how the outline's scoped
- * read went wrong undetected in the first place.
  *
  * Notion renders markdown server-side and returns it as an opaque string, so
  * the fake does the same rather than deriving it from the blocks: deriving it
@@ -150,15 +144,34 @@ export class FakeStore {
     // A page whose top level carries headings, one of them inside a collapsed
     // toggle — the shape an outline has to cope with on a real page.
     this.put({ ...block(PAGE_ID, 'child_page', 'The page'), has_children: true })
+    // Block for block, this is INITIAL_PAGE_MARKDOWN below. The two used to
+    // describe different pages — the Markdown had a table and a trailing
+    // heading the tree lacked — so the same section counted 3 blocks one way
+    // and 5 the other. A fake that disagrees with itself is how the outline's
+    // scoped read stayed broken through a green suite; keep these in step.
     this.put(block(H1_ROUTES, 'heading_1', 'Routes in'))
     this.put(block('body-1', 'paragraph', 'The opening paragraph of the page.'))
     this.put(block(H2_LANDED, 'heading_2', 'What landed'))
-    this.put(block('body-2', 'paragraph', 'A paragraph that mentions cold dread.'))
-    this.put(block('body-3', 'paragraph', 'Another paragraph.'))
-    this.put({ ...block(OUTLINE_TOGGLE, 'toggle', 'A collapsed toggle'), has_children: true })
-    this.put(block(H2_NESTED, 'heading_2', 'Hidden inside a toggle'))
-    this.children.set(PAGE_ID, [H1_ROUTES, 'body-1', H2_LANDED, 'body-2', 'body-3', OUTLINE_TOGGLE])
-    this.children.set(OUTLINE_TOGGLE, [H2_NESTED])
+    this.put(block('body-2', 'paragraph', 'A paragraph that mentions cold dread and nothing else.'))
+    this.put(block('body-3', 'paragraph', 'A span of ~140 years, a literal # in prose, and an asterisk * standing alone.'))
+    this.put({ ...block(OUTLINE_TOGGLE, 'toggle', 'Hidden section'), has_children: true })
+    this.put(block(H2_NESTED, 'heading_3', 'A heading inside the toggle'))
+    this.put(block('body-nested', 'paragraph', 'A paragraph nested one level down.'))
+    this.put(block(OUTLINE_TABLE, 'table', ''))
+    this.put(block(H2_OPEN, 'heading_2', 'Still open'))
+    this.put(block('body-4', 'paragraph', 'A closing paragraph.'))
+    this.children.set(PAGE_ID, [
+      H1_ROUTES,
+      'body-1',
+      H2_LANDED,
+      'body-2',
+      'body-3',
+      OUTLINE_TOGGLE,
+      OUTLINE_TABLE,
+      H2_OPEN,
+      'body-4',
+    ])
+    this.children.set(OUTLINE_TOGGLE, [H2_NESTED, 'body-nested'])
 
     // A toggle with a child that itself has a child, so a subtree walk that
     // only descends one level is distinguishable from one that recurses.

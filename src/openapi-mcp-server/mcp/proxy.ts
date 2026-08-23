@@ -9,6 +9,7 @@ import {
   addSectionHint,
   buildOutline,
   headingOf,
+  shapeDryRun,
   sliceSection,
   readPayloadOptions,
   shapeMarkdownRead,
@@ -259,6 +260,19 @@ export class MCPProxy {
         if (payloadOptions.format === 'outline') {
           const outline = await buildOutline(String(deserializedParams.page_id ?? ''), this.blockReader())
           return { content: [{ type: 'text', text: JSON.stringify(outline) }] }
+        }
+
+        // A dry run must write nothing, so it short-circuits before the
+        // precondition check and the PATCH — it reads the page and simulates.
+        if (payloadOptions.dryRun && contentUpdates) {
+          const markdownOp = this.findOperation('API-retrieve-page-markdown')
+          if (!markdownOp) throw new Error('retrieve-page-markdown operation is not available')
+          const pageId = String(deserializedParams.page_id ?? '')
+          const current = await this.httpClient.executeOperation(markdownOp, { page_id: pageId })
+          const markdown = (current.data as { markdown?: unknown })?.markdown
+          if (typeof markdown !== 'string') throw new Error('could not read the page to simulate against')
+          const preview = shapeDryRun(pageId, markdown, contentUpdates)
+          return { content: [{ type: 'text', text: JSON.stringify(preview) }] }
         }
 
         if (payloadOptions.format === 'section') {

@@ -43,8 +43,9 @@ import { ContentUpdate } from './content-updates'
 export const RETURN_CONTENT = 'return_content'
 export const FORMAT = 'format'
 export const MAX_BLOCKS = 'max_blocks'
+export const DRY_RUN = 'dry_run'
 
-const PAYLOAD_PARAMS = [RETURN_CONTENT, FORMAT, MAX_BLOCKS]
+const PAYLOAD_PARAMS = [RETURN_CONTENT, FORMAT, MAX_BLOCKS, DRY_RUN]
 
 export type ReturnContent = 'changed' | 'none' | 'full'
 
@@ -87,6 +88,7 @@ export interface PayloadOptions {
   returnContent?: ReturnContent
   format?: 'markdown' | 'outline' | 'section'
   maxBlocks?: number
+  dryRun?: boolean
 }
 
 /** Strip the client-facing params so they are never sent to Notion. */
@@ -116,7 +118,7 @@ export function readPayloadOptions(
       const raw = params[RETURN_CONTENT]
       const returnContent =
         raw === 'changed' || raw === 'none' || raw === 'full' ? raw : contentUpdates ? 'changed' : 'none'
-      return { returnContent }
+      return { returnContent, dryRun: params[DRY_RUN] === true }
     }
 
     case 'retrieve-page-markdown': {
@@ -466,6 +468,92 @@ export function addSectionHint(data: unknown, sectionRequested = false): unknown
       : 'This block is a heading, and its section is not nested beneath it — the content that follows ' +
         'this heading on the page is stored as its siblings. Re-read with format: "section" to get the ' +
         'heading together with the blocks under it.',
+  }
+}
+
+/** Every index at which `needle` occurs in `haystack`. */
+function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0
+  let count = 0
+  let from = 0
+  for (;;) {
+    const at = haystack.indexOf(needle, from)
+    if (at < 0) return count
+    count++
+    from = at + needle.length
+  }
+}
+
+/**
+ * Apply a batch of content updates in memory and report what each one would do.
+ *
+ * This is the only check that sees the *page*. `validateContentUpdates`
+ * compares the strings in a batch against each other and says so explicitly: it
+ * cannot catch two anchors that are unrelated as strings but land next to each
+ * other in the document. Simulating against the real text can — an anchor that
+ * matched before an earlier edit ran and does not afterwards shows up here as a
+ * miss, with nothing written.
+ *
+ * Edits are applied in order against a document each preceding edit has already
+ * changed, because that is what Notion does server-side.
+ */
+export function simulateContentUpdates(
+  markdown: string,
+  updates: ContentUpdate[],
+): { changes: Record<string, unknown>[]; result: string } {
+  let document = markdown
+  const changes: Record<string, unknown>[] = []
+
+  updates.forEach((update, index) => {
+    const matches = countOccurrences(document, update.old_str)
+    if (matches === 0) {
+      changes.push({
+        index,
+        matches: 0,
+        would_apply: false,
+        old_str: update.old_str,
+        note:
+          'No match at this point in the batch. Either the anchor is not on the page, or an earlier ' +
+          'edit in this batch changed the text it was written against.',
+      })
+      return
+    }
+
+    const before = extractRegion(document, update.old_str)
+    // A function replacement, so `$&` and friends in new_str stay literal.
+    document = update.replace_all_matches
+      ? document.split(update.old_str).join(update.new_str)
+      : document.replace(update.old_str, () => update.new_str)
+    const after = extractRegion(document, update.new_str)
+
+    changes.push({
+      index,
+      matches,
+      would_apply: true,
+      ...(matches > 1 && !update.replace_all_matches
+        ? { note: `Anchor occurs ${matches} times; only the first would be replaced.` }
+        : {}),
+      before,
+      after,
+    })
+  })
+
+  return { changes, result: document }
+}
+
+/** The response for a dry run: what would happen, with nothing written. */
+export function shapeDryRun(pageId: string, markdown: string, updates: ContentUpdate[]): unknown {
+  const { changes } = simulateContentUpdates(markdown, updates)
+  const wouldApply = changes.filter((c) => c.would_apply).length
+  return {
+    object: 'page_markdown_dry_run',
+    id: pageId,
+    dry_run: true,
+    written: false,
+    edits: updates.length,
+    would_apply: wouldApply,
+    would_fail: updates.length - wouldApply,
+    changes,
   }
 }
 

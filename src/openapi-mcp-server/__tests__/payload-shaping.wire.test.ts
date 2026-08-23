@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { callTool, seq, withNotionMcp, type Harness } from './mcp-harness'
-import { H1_ROUTES, H2_LANDED, H2_NESTED, OUTLINE_TOGGLE, PAGE_ID } from './notion-fake'
+import { H1_ROUTES, H2_LANDED, H2_NESTED, H2_OPEN, OUTLINE_TOGGLE, PAGE_ID } from './notion-fake'
 
 /**
  * Wire-level tests for response payload shaping.
@@ -168,16 +168,16 @@ describe('page-markdown payload shaping', () => {
       expect(seq(h.requests).some((r) => r.includes('/markdown'))).toBe(false)
 
       const byId = Object.fromEntries(data.outline.map((e: any) => [e.block_id, e]))
-      expect(Object.keys(byId).sort()).toEqual([H1_ROUTES, H2_LANDED, H2_NESTED].sort())
+      expect(Object.keys(byId).sort()).toEqual([H1_ROUTES, H2_LANDED, H2_NESTED, H2_OPEN].sort())
 
       expect(byId[H1_ROUTES]).toMatchObject({ type: 'heading_1', level: 1, text: 'Routes in' })
       expect(byId[H1_ROUTES].content_hash).toMatch(/^[0-9a-f]{16}$/)
 
-      // "What landed" is followed by two body paragraphs, then a toggle, and
-      // is not closed by a heading of the same or a higher level.
-      expect(byId[H2_LANDED].section_blocks).toBe(3)
-      // "Routes in" is an h1, so the following h2 does not close it.
-      expect(byId[H1_ROUTES].section_blocks).toBe(5)
+      // "What landed" runs to the next h2: two paragraphs, the toggle, the
+      // table. "Still open" closes it.
+      expect(byId[H2_LANDED].section_blocks).toBe(4)
+      // "Routes in" is an h1, so neither h2 closes it — it runs to the end.
+      expect(byId[H1_ROUTES].section_blocks).toBe(8)
     })
 
     it('descends into collapsed containers to find hidden headings', async () => {
@@ -217,16 +217,14 @@ describe('page-markdown payload shaping', () => {
       })
 
       expect(data.object).toBe('page_markdown_section')
-      // Heading + two paragraphs + the toggle + the table, stopping at the next
-      // h2. Counted against the Markdown fixture, not the outline's
-      // section_blocks: this fake's block tree and its Markdown are independent
-      // fixtures and do not describe the same page (see notion-fake.ts).
+      // The tree and the Markdown describe the same page, so the section read
+      // and the outline's count agree: 4 siblings plus the heading itself.
+      expect(data.section_blocks).toBe(section.section_blocks + 1)
       expect(data.section_blocks).toBe(5)
       expect(data.markdown.startsWith('## What landed')).toBe(true)
       expect(data.markdown).toContain('</table>')
       expect(data.markdown).not.toContain('## Still open')
       expect(data.markdown).not.toContain('The opening paragraph of the page.')
-      expect(section.section_blocks).toBeGreaterThan(0)
 
       // Retrieve the block to learn its parent and level, then read the parent
       // in full and cut the section out on this side of the wire. The large
@@ -314,5 +312,104 @@ describe('page-markdown payload shaping', () => {
     ).rejects.toThrow()
 
     expect(h.requests).toEqual([])
+  })
+})
+
+describe('dry run', () => {
+  let h: Harness
+
+  beforeAll(async () => {
+    h = await withNotionMcp()
+  })
+
+  afterAll(async () => {
+    await h.close()
+  })
+
+  beforeEach(() => {
+    h.fake.reset()
+  })
+
+  it('writes nothing, and says what would happen', async () => {
+    const data = await callTool(h.client, 'API-update-page-markdown', {
+      page_id: PAGE_ID,
+      dry_run: true,
+      type: 'update_content',
+      update_content: {
+        content_updates: [{ old_str: 'A closing paragraph.', new_str: 'A rewritten closing paragraph.' }],
+      },
+    })
+
+    expect(data.object).toBe('page_markdown_dry_run')
+    expect(data.written).toBe(false)
+    expect(data.would_apply).toBe(1)
+    expect(data.would_fail).toBe(0)
+    expect(data.changes[0]).toMatchObject({
+      index: 0,
+      matches: 1,
+      would_apply: true,
+      before: 'A closing paragraph.',
+      after: 'A rewritten closing paragraph.',
+    })
+
+    // The whole point: a read to simulate against, and no PATCH at all.
+    expect(seq(h.requests)).toEqual([`GET /v1/pages/${PAGE_ID}/markdown`])
+    expect(h.fake.store.pageMarkdown).toContain('A closing paragraph.')
+  })
+
+  it('reports an anchor that is not on the page as a miss', async () => {
+    const data = await callTool(h.client, 'API-update-page-markdown', {
+      page_id: PAGE_ID,
+      dry_run: true,
+      type: 'update_content',
+      update_content: {
+        content_updates: [{ old_str: 'text that is not on the page', new_str: 'never applied' }],
+      },
+    })
+
+    expect(data.would_apply).toBe(0)
+    expect(data.would_fail).toBe(1)
+    expect(data.changes[0].would_apply).toBe(false)
+    expect(data.changes[0].matches).toBe(0)
+  })
+
+  it('catches an anchor that an earlier edit in the batch destroys', async () => {
+    // This is the case validateContentUpdates says it cannot see: the two
+    // anchors are unrelated as strings, so only simulating against the page
+    // shows that the first edit removes the text the second needs.
+    const data = await callTool(h.client, 'API-update-page-markdown', {
+      page_id: PAGE_ID,
+      dry_run: true,
+      type: 'update_content',
+      update_content: {
+        content_updates: [
+          // Disjoint as strings — neither contains the other, and the second
+          // anchor is not in the first's replacement — so the string checks
+          // pass. They still collide on the page.
+          { old_str: 'mentions cold dread', new_str: 'mentions calm' },
+          { old_str: 'cold dread and nothing else.', new_str: 'warm relief.' },
+        ],
+      },
+    })
+
+    expect(data.changes[0].would_apply).toBe(true)
+    expect(data.changes[1].would_apply).toBe(false)
+    expect(data.changes[1].note).toContain('earlier edit')
+    expect(h.requests.some((r) => r.method === 'PATCH')).toBe(false)
+  })
+
+  it('never sends dry_run to Notion on a real write', async () => {
+    await callTool(h.client, 'API-update-page-markdown', {
+      page_id: PAGE_ID,
+      dry_run: false,
+      type: 'update_content',
+      update_content: {
+        content_updates: [{ old_str: 'A closing paragraph.', new_str: 'Edited for real.' }],
+      },
+    })
+
+    const patch = h.requests.find((r) => r.method === 'PATCH')!
+    expect(patch.query).toEqual({})
+    expect(JSON.stringify(patch.body)).not.toContain('dry_run')
   })
 })

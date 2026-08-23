@@ -92,7 +92,18 @@ The server trims both directions:
   "markdown_omitted": true }
 ```
 
-Echoing the changed region is what lets you confirm the write landed as intended — including spotting escaping corruption — without re-reading. `verified: false` means the replacement text was not found verbatim afterwards: the edit may still have been applied with different escaping, so read the block by ID to be sure. Control it with `return_content`: `changed` (default for `update_content`), `none` (default for `replace_content`), or `full` for the old behaviour.
+Echoing the changed region is what lets you confirm the write landed as intended — including spotting escaping corruption — without re-reading. `verified: false` does **not** mean the anchor missed — Notion rejects a non-matching `old_str` itself with a 400, so that case never produces a receipt. It means the edit was applied but the new text could not be found verbatim afterwards, which in practice means Notion escaped it differently from what you sent. Read the block by ID to see what actually landed. Control it with `return_content`: `changed` (default for `update_content`), `none` (default for `replace_content`), or `full` for the old behaviour.
+
+**`dry_run` previews a batch without writing it.** Pass `dry_run: true` to `update-page-markdown` alongside `update_content` and nothing is written: the server reads the page, applies the edits in memory in the order Notion would, and reports what each one does.
+
+```json
+{ "object": "page_markdown_dry_run", "written": false, "edits": 2, "would_apply": 1, "would_fail": 1,
+  "changes": [{ "index": 0, "matches": 1, "would_apply": true, "before": "…", "after": "…" },
+              { "index": 1, "matches": 0, "would_apply": false,
+                "note": "No match at this point in the batch. Either the anchor is not on the page, or an earlier edit in this batch changed the text it was written against." }] }
+```
+
+This is the only check that sees the page. The [batch safety checks](#find-and-replace-safety-checks) compare the strings in a request against each other and cannot catch two anchors that are unrelated as strings but land next to each other in the document — a dry run can, because the second anchor simply stops matching once the first edit has been applied.
 
 **`format: "outline"` makes locating a section cheap.** It returns headings only — each with its block ID, content hash and section size — and does not read the page body at all:
 

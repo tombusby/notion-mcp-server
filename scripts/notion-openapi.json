@@ -2473,7 +2473,7 @@
         "security": []
       },
       "patch": {
-        "summary": "Update a page's content as Markdown. Use `replace_content` to overwrite a whole page or block. For targeted edits to a large page, prefer addressing blocks by ID — Retrieve block children, then Update a block, Delete a block or Append block children — because find-and-replace has to reproduce existing text exactly and cannot match across block boundaries.",
+        "summary": "Update a page's content as Markdown. Use `replace_content` to overwrite a whole page or block. For targeted edits to a large page, prefer addressing blocks by ID — Retrieve block children, then Update a block, Delete a block or Append block children — because find-and-replace has to reproduce existing text exactly and cannot match across block boundaries. Pass `dry_run: true` to preview a batch without writing.",
         "description": "Update the content of a Notion page using enhanced Markdown. Prefer `replace_content` to overwrite the whole page or `update_content` for targeted find-and-replace edits.\n\nPREFER BLOCK-ID EDITS FOR TARGETED CHANGES. This tool rewrites by matching text, so it cannot be guarded by a content hash and will not warn you if the page changed since you read it. For editing or deleting specific existing content, use API-update-a-block / API-delete-a-block, which take a block ID and a content hash and refuse a stale write. Use this tool for bulk rewrites and for content the structured block API cannot express.",
         "operationId": "update-page-markdown",
         "tags": [
@@ -2513,6 +2513,15 @@
               "default": "2026-03-11"
             },
             "description": "The Notion API version. The page-markdown endpoints require 2026-03-11 or later."
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "required": false,
+            "description": "Simulate the edits and return what they would do, writing nothing. Applies each edit in order against the page as the previous edits would have left it — the only check that sees the actual page, so it catches an anchor that stops matching because an earlier edit in the same batch changed the text around it. Use it before a batch you cannot easily undo.",
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "requestBody": {

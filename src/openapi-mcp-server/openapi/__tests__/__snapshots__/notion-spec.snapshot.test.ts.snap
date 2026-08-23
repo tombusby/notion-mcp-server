@@ -383,7 +383,7 @@ Error Responses:
     ],
   },
   {
-    "description": "Notion | Update a page's content as Markdown. Use \`replace_content\` to overwrite a whole page or block. For targeted edits to a large page, prefer addressing blocks by ID — Retrieve block children, then Update a block, Delete a block or Append block children — because find-and-replace has to reproduce existing text exactly and cannot match across block boundaries.
+    "description": "Notion | Update a page's content as Markdown. Use \`replace_content\` to overwrite a whole page or block. For targeted edits to a large page, prefer addressing blocks by ID — Retrieve block children, then Update a block, Delete a block or Append block children — because find-and-replace has to reproduce existing text exactly and cannot match across block boundaries. Pass \`dry_run: true\` to preview a batch without writing.
 Error Responses:
 400: Bad request
 403: The integration lacks the read/update content capability required for this page.
@@ -393,6 +393,7 @@ Error Responses:
     "httpMethod": "patch",
     "name": "update-page-markdown",
     "properties": [
+      "dry_run",
       "insert_content",
       "page_id",
       "replace_content",
