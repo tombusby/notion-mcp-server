@@ -413,3 +413,64 @@ describe('dry run', () => {
     expect(JSON.stringify(patch.body)).not.toContain('dry_run')
   })
 })
+
+describe('dry_run survives a client with a stale schema', () => {
+  let h: Harness
+
+  beforeAll(async () => {
+    h = await withNotionMcp()
+  })
+
+  afterAll(async () => {
+    await h.close()
+  })
+
+  beforeEach(() => {
+    h.fake.reset()
+  })
+
+  it('honours dry_run nested inside update_content', async () => {
+    // Found live: a connector validating the call against a cached tool schema
+    // dropped the top-level dry_run, and the preview wrote to the page. The
+    // nested flag rides inside an open object, so it is not stripped.
+    const data = await callTool(h.client, 'API-update-page-markdown', {
+      page_id: PAGE_ID,
+      type: 'update_content',
+      update_content: {
+        dry_run: true,
+        content_updates: [{ old_str: 'A closing paragraph.', new_str: 'Previewed only.' }],
+      },
+    })
+
+    expect(data.object).toBe('page_markdown_dry_run')
+    expect(data.written).toBe(false)
+    expect(h.requests.some((r) => r.method === 'PATCH')).toBe(false)
+    expect(h.fake.store.pageMarkdown).toContain('A closing paragraph.')
+  })
+
+  it('still writes when neither form is set', async () => {
+    const data = await callTool(h.client, 'API-update-page-markdown', {
+      page_id: PAGE_ID,
+      type: 'update_content',
+      update_content: {
+        content_updates: [{ old_str: 'A closing paragraph.', new_str: 'Written for real.' }],
+      },
+    })
+
+    expect(data.object).toBe('page_markdown_update')
+    expect(h.requests.some((r) => r.method === 'PATCH')).toBe(true)
+  })
+
+  it('never forwards the nested flag to Notion', async () => {
+    await callTool(h.client, 'API-update-page-markdown', {
+      page_id: PAGE_ID,
+      type: 'update_content',
+      update_content: {
+        dry_run: false,
+        content_updates: [{ old_str: 'A closing paragraph.', new_str: 'Written for real.' }],
+      },
+    })
+    const patch = h.requests.find((r) => r.method === 'PATCH')!
+    expect(JSON.stringify(patch.body)).not.toContain('dry_run')
+  })
+})

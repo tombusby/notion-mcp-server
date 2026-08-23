@@ -97,6 +97,16 @@ export function stripPayloadParams(params: Record<string, unknown>): Record<stri
   for (const key of PAYLOAD_PARAMS) {
     delete stripped[key]
   }
+
+  // `dry_run` is also accepted inside `update_content`, so it has to be removed
+  // from there too — that object goes to Notion as the request body, and a
+  // top-level-only strip would send it an argument it does not define.
+  const updateContent = stripped.update_content
+  if (typeof updateContent === 'object' && updateContent !== null && DRY_RUN in updateContent) {
+    const { [DRY_RUN]: _dropped, ...rest } = updateContent as Record<string, unknown>
+    stripped.update_content = rest
+  }
+
   return stripped
 }
 
@@ -118,7 +128,17 @@ export function readPayloadOptions(
       const raw = params[RETURN_CONTENT]
       const returnContent =
         raw === 'changed' || raw === 'none' || raw === 'full' ? raw : contentUpdates ? 'changed' : 'none'
-      return { returnContent, dryRun: params[DRY_RUN] === true }
+      // Accepted at the top level and nested inside `update_content`, and the
+      // nested form is the one to trust. A client validating a call against a
+      // cached tool schema drops properties that schema does not list, so a
+      // newly added top-level `dry_run` is silently discarded and the "preview"
+      // becomes a real write. `update_content` is an open object, so a nested
+      // flag survives that stripping. Defaulting to *writing* is the wrong
+      // failure mode for this particular parameter.
+      const nested = params.update_content
+      const nestedDryRun =
+        typeof nested === 'object' && nested !== null && (nested as Record<string, unknown>)[DRY_RUN] === true
+      return { returnContent, dryRun: params[DRY_RUN] === true || nestedDryRun }
     }
 
     case 'retrieve-page-markdown': {

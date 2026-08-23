@@ -103,6 +103,8 @@ Echoing the changed region is what lets you confirm the write landed as intended
                 "note": "No match at this point in the batch. Either the anchor is not on the page, or an earlier edit in this batch changed the text it was written against." }] }
 ```
 
+`dry_run` is accepted at the top level and inside `update_content`. **Prefer the nested form.** A client that validates a call against a cached tool schema drops properties that schema does not list, so a newly added top-level `dry_run` can be silently discarded — turning the preview into a real write. That is not hypothetical: it happened on the first live run of this feature. `update_content` is an open object, so a flag nested there survives.
+
 This is the only check that sees the page. The [batch safety checks](#find-and-replace-safety-checks) compare the strings in a request against each other and cannot catch two anchors that are unrelated as strings but land next to each other in the document — a dry run can, because the second anchor simply stops matching once the first edit has been applied.
 
 **`format: "outline"` makes locating a section cheap.** It returns headings only — each with its block ID, content hash and section size — and does not read the page body at all:

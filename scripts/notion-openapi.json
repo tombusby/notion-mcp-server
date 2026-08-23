@@ -2598,6 +2598,10 @@
                       "allow_deleting_content": {
                         "type": "boolean",
                         "description": "Permit deletion of existing child pages/databases removed by the edits."
+                      },
+                      "dry_run": {
+                        "type": "boolean",
+                        "description": "Simulate these edits and return what they would do, writing nothing. Equivalent to the top-level dry_run, and preferred: a client using a cached tool schema may silently drop an unrecognised top-level parameter, which would turn a preview into a real write."
                       }
                     }
                   },
