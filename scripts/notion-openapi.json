@@ -2264,7 +2264,7 @@
     "/v1/pages/{page_id}/markdown": {
       "get": {
         "summary": "Retrieve a page's content as Markdown. Accepts a block ID as well as a page ID, so a single section can be read on its own instead of fetching a whole large page. On a page you have not read before, start with `format: outline` to get the headings and their block IDs cheaply, then read only the section you need. The Markdown returned is display-oriented: escaping of characters such as `*`, `~` and `#` may differ from what is stored, so it is not guaranteed to round-trip when fed back as `old_str`. For edits that must be precise, address blocks by ID via Retrieve block children instead.",
-        "description": "Retrieve the full content of a Notion page rendered as enhanced Markdown. Designed for agentic and developer tools that work natively with Markdown instead of the block JSON returned by Retrieve block children.",
+        "description": "Retrieve the full content of a Notion page rendered as enhanced Markdown. Designed for agentic and developer tools that work natively with Markdown instead of the block JSON returned by Retrieve block children. This read returns no content_hash, so it cannot be used as the source of a precondition for a block write. Take hashes from `format: \"outline\"`, which returns a `content_hash` per heading without reading the page body, or from Retrieve a block / Retrieve block children. Passing a block ID as page_id reads just that section.",
         "operationId": "retrieve-page-markdown",
         "tags": [
           "Pages"

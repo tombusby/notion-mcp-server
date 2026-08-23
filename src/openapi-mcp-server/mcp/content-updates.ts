@@ -21,6 +21,8 @@
  * guarantee should address blocks by ID instead.
  */
 
+import { splitBlocks } from './payload-shaping'
+
 export type ContentUpdate = {
   old_str: string
   new_str: string
@@ -34,8 +36,16 @@ export class ContentUpdateValidationError extends Error {
   }
 }
 
-/** A blank line separates two Notion blocks in rendered Markdown. */
-const BLANK_LINE = /\n[ \t]*\n/
+/**
+ * Markup that means a newline is inside one block rather than between two.
+ *
+ * Notion renders a table as a single `<table>` block spanning many lines (one
+ * per cell) and a toggle as a single `<details>` block wrapping its children.
+ * A fenced code block likewise holds its newlines inside one block. An anchor
+ * containing any of these is multi-line but not necessarily multi-block, and we
+ * cannot tell from the string alone — so it is left alone.
+ */
+const WITHIN_BLOCK_MARKUP = /<\/?(?:table|tr|td|th|details|summary)\b|```/
 
 /** Keep quoted anchors readable when they appear in an error message. */
 function excerpt(value: string, limit = 60): string {
@@ -73,16 +83,28 @@ export function validateContentUpdates(updates: ContentUpdate[]): void {
       )
     }
 
-    // Markdown separated by a blank line is a separate block, and the API
-    // matches within a single block only — such an anchor can never match.
-    // Table rows are multi-line but are *not* blank-line separated, so this
-    // check correctly leaves them alone.
-    if (BLANK_LINE.test(update.old_str)) {
-      const blocks = update.old_str.split(BLANK_LINE).length
+    // The API matches within a single block only, so a multi-block anchor can
+    // never match however carefully it is reproduced. Without this check the
+    // caller sees a bare "no match" and cannot tell it from a typo.
+    //
+    // Notion separates blocks with a SINGLE newline, not a blank line. An
+    // earlier version of this check tested for a blank line, which meant the
+    // common case — two paragraphs copied out of a markdown read — sailed
+    // through and failed opaquely at the API.
+    //
+    // Deliberately conservative, with a false positive we accept: a paragraph
+    // containing a soft line break (shift+enter) is one block but looks
+    // identical to two paragraphs from the string alone. Rejecting it costs a
+    // loud, recoverable refusal that names the alternative; letting it through
+    // costs the unexplained no-match this check exists to remove. Anchors that
+    // must be exact belong on the block-ID path regardless.
+    if (!WITHIN_BLOCK_MARKUP.test(update.old_str) && update.old_str.includes('\n')) {
+      const blocks = splitBlocks(update.old_str).length
       throw new ContentUpdateValidationError(
         `content_updates[${index}]: old_str spans ${blocks} blocks; multi-block matching is unsupported and will never match. ` +
-          `Split it into one edit per block, or address the blocks by ID — read them with Retrieve block children, ` +
-          `then use Update a block or Delete a block.`,
+          `Notion separates blocks with a single newline. Split it into one edit per block, or address the blocks by ID — ` +
+          `read them with Retrieve block children, then use Update a block or Delete a block. ` +
+          `(If this is one paragraph containing a soft line break, the block-ID path is the reliable way to edit it.)`,
       )
     }
   })

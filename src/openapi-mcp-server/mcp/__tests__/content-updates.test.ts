@@ -30,11 +30,29 @@ describe('validateContentUpdates', () => {
       expect(() => validateContentUpdates([])).not.toThrow()
     })
 
-    it('allows a multi-line anchor with no blank line, such as a table row', () => {
-      // Table rows are stored one cell per line but are not blank-line
-      // separated, so they are a single block and must not be rejected.
+    it('allows a table row, which is multi-line inside a single block', () => {
+      // Notion renders a table as one <table> block with a line per cell. An
+      // earlier version of this test asserted the same thing about bare
+      // newline-joined text ('Genre\nPop\n1984'), which encoded the belief
+      // that blocks are blank-line separated — a live read disproved it.
       expect(() =>
-        validateContentUpdates([{ old_str: 'Genre\nPop\n1984', new_str: 'Genre\nSynthpop\n1984' }]),
+        validateContentUpdates([
+          { old_str: '<tr>\n<td>Genre</td>\n<td>Pop</td>\n</tr>', new_str: '<tr>\n<td>Genre</td>\n<td>Synthpop</td>\n</tr>' },
+        ]),
+      ).not.toThrow()
+    })
+
+    it('allows a fenced code block, whose newlines are inside one block', () => {
+      expect(() =>
+        validateContentUpdates([{ old_str: '```js\nconst a = 1\n```', new_str: '```js\nconst a = 2\n```' }]),
+      ).not.toThrow()
+    })
+
+    it('allows a whole toggle, which wraps its children in one block', () => {
+      expect(() =>
+        validateContentUpdates([
+          { old_str: '<details>\n<summary>Old</summary>\n</details>', new_str: '<details>\n<summary>New</summary>\n</details>' },
+        ]),
       ).not.toThrow()
     })
 
@@ -54,6 +72,25 @@ describe('validateContentUpdates', () => {
   })
 
   describe('rejects multi-block anchors', () => {
+    it('rejects two paragraphs separated by a single newline', () => {
+      // The case the blank-line check missed entirely: Notion separates blocks
+      // with one newline, so this is the shape a caller actually produces by
+      // copying a region out of a markdown read.
+      expectRejection([{ old_str: 'First paragraph.\nSecond paragraph.', new_str: 'x' }], /spans 2 blocks/)
+    })
+
+    it('rejects two list items, which are separate blocks', () => {
+      expectRejection([{ old_str: '- one\n- two', new_str: 'x' }], /spans 2 blocks/)
+    })
+
+    it('rejects a heading followed by its paragraph', () => {
+      expectRejection([{ old_str: '## Heading\nBody text.', new_str: 'x' }], /single newline/)
+    })
+
+    it('names the soft-break case rather than leaving the caller guessing', () => {
+      expectRejection([{ old_str: 'a\nb', new_str: 'x' }], /soft line break/)
+    })
+
     it('rejects an old_str spanning a blank line, naming the block count', () => {
       expectRejection(
         [{ old_str: 'First paragraph.\n\nSecond paragraph.', new_str: 'Merged.' }],

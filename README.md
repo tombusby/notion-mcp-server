@@ -106,7 +106,7 @@ This is the entry point the block-ID path was missing. Editing safely needs a bl
 
 The outline walks the block tree and descends into collapsed containers, bounded by a request budget; if it stops early it sets `truncated` and says so rather than implying the page has no further headings.
 
-Two things this deliberately does not do. It does not annotate rendered Markdown with block-ID comments: Notion returns Markdown as an opaque string with no block correspondence, so aligning IDs against serialised text would reintroduce exactly the fragility block addressing exists to remove — the outline reaches the same destination without that risk. And it does not repair the Markdown escaping bug (`**Author**, *Title*` returning as `**Author, \*Title**\*`), which is produced by Notion's own serialiser: the stored blocks are correct, as `get-block-children` shows, so it is not fixable from this side.
+Two things this deliberately does not do. It does not annotate rendered Markdown with block-ID comments: Notion returns Markdown as an opaque string with no block correspondence, so aligning IDs against serialised text would reintroduce exactly the fragility block addressing exists to remove — the outline reaches the same destination without that risk. And it does not repair Markdown escaping of literal `*` and `~`, which is produced by Notion's own serialiser: the stored blocks are correct, as `get-block-children` shows, so it is not fixable from this side. (A more serious form of this — nested bold/italic being mangled into `**Author, \*Title**\*` — was reported against an earlier version and no longer reproduces.)
 
 These endpoints require Notion API version `2026-03-11`. The server now sources the `Notion-Version` header **per operation** from the OpenAPI spec, so these tools use `2026-03-11` while the rest of the API continues to use `2025-09-03` — no configuration needed. If you set `Notion-Version` yourself via `OPENAPI_MCP_HEADERS`, your value takes precedence for every tool.
 
@@ -115,7 +115,7 @@ These endpoints require Notion API version `2026-03-11`. The server now sources 
 Markdown find-and-replace is convenient, but it anchors edits to *content*: `old_str` has to reproduce the existing text exactly. That gets fragile on large pages, and it has three limits worth knowing:
 
 - **An `old_str` cannot span blocks.** Text either side of a blank line lives in different blocks, and the API matches within a single block only — such an anchor never matches, however carefully it is reproduced.
-- **Rendered Markdown may not round-trip.** Escaping of characters like `*`, `~` and `#` can differ from what is stored, so an anchor copied out of `retrieve-page-markdown` may not match when fed back in. Nested bold/italic (common in bibliographies) is the usual culprit.
+- **Literal punctuation comes back escaped.** `~140` reads back as `\~140` and a lone `*` as `\*`, so an anchor copied out of `retrieve-page-markdown` may not match when fed back in. Formatting itself round-trips: nested bold/italic such as `**Author**, *Title*` is returned byte-identical, as is `*italic*` adjacent to `**bold**` (retested against live content, Aug 2026). A literal `#` in prose is not escaped.
 - **Table rows are stored one cell per line.** A row rewritten as a single line will not match.
 
 For anything targeted — and for any bulk restructuring — address blocks by **ID** instead:
@@ -146,7 +146,7 @@ Two caveats on what you can *write*. `patch-block-children` only describes `para
 
 Before sending, the server rejects batches where:
 
-- an `old_str` spans a blank line (multi-block, can never match);
+- an `old_str` spans a newline outside a table, toggle or code fence (multi-block, can never match — Notion separates blocks with a single newline, not a blank line);
 - a later `old_str` appears in an earlier edit's `new_str` (it would match text the earlier edit just wrote);
 - two anchors overlap, or are identical without `replace_all_matches`;
 - an `old_str` is empty, or identical to its `new_str`.
