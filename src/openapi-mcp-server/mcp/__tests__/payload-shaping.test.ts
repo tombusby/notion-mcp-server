@@ -219,3 +219,21 @@ describe('addSectionHint', () => {
     expect((addSectionHint({ object: 'page_markdown', markdown: 'Just a paragraph.' }) as any).section_hint).toBeUndefined()
   })
 })
+
+describe('addSectionHint does not tell a caller to repeat what they just did', () => {
+  const loneHeading = { object: 'page_markdown', markdown: '## Notes' }
+
+  it('suggests format: "section" to a caller who did not use it', () => {
+    expect((addSectionHint(loneHeading) as any).section_hint).toContain('Re-read with format: "section"')
+  })
+
+  it('explains the fallback instead when format: "section" was already requested', () => {
+    // Live testing found this: a repeated heading falls back to an ordinary
+    // read, and the old hint told the caller to retry with the exact parameter
+    // they had just used — an instruction to loop.
+    const hint = (addSectionHint(loneHeading, true) as any).section_hint
+    expect(hint).toContain('could not be resolved')
+    expect(hint).toContain('more than once')
+    expect(hint).not.toContain('Re-read with format: "section"')
+  })
+})

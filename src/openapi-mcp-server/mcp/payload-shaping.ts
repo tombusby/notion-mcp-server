@@ -445,18 +445,27 @@ export function sliceSection(markdown: string, level: number, text: string): { m
  * Note a lone-heading result, which is almost always a caller expecting a
  * section read. Costs nothing: it is read off the response we already have.
  */
-export function addSectionHint(data: unknown): unknown {
+export function addSectionHint(data: unknown, sectionRequested = false): unknown {
   if (!data || typeof data !== 'object') return data
   const record = data as Record<string, unknown>
   if (typeof record.markdown !== 'string' || record.truncated === true) return data
   const blocks = splitBlocks(record.markdown)
   if (blocks.length !== 1 || !MARKDOWN_HEADING.test(blocks[0])) return data
+
+  // Telling a caller who already asked for `section` to ask for `section` is an
+  // instruction to loop. Reaching here with sectionRequested means the section
+  // could not be resolved, so say that instead — it is a different situation
+  // with a different remedy.
   return {
     ...record,
-    section_hint:
-      'This block is a heading, and its section is not nested beneath it — the content that follows ' +
-      'this heading on the page is stored as its siblings. Re-read with format: "section" to get the ' +
-      'heading together with the blocks under it.',
+    section_hint: sectionRequested
+      ? 'This heading\'s section could not be resolved, so this is an ordinary read of the heading ' +
+        'block alone. That happens when the heading text appears more than once on the page at the ' +
+        'same level, or when it sits inside a container such as a toggle. Read the parent page and ' +
+        'locate the section yourself, or edit the blocks by ID via Retrieve block children.'
+      : 'This block is a heading, and its section is not nested beneath it — the content that follows ' +
+        'this heading on the page is stored as its siblings. Re-read with format: "section" to get the ' +
+        'heading together with the blocks under it.',
   }
 }
 

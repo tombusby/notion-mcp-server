@@ -363,7 +363,7 @@ export class MCPProxy {
         // The hint costs nothing — it is read off the response already in hand
         // — and catches the caller who passed a heading's block ID expecting
         // its section and got the heading line by itself.
-        return addSectionHint(shapeMarkdownRead(data, options.maxBlocks))
+        return addSectionHint(shapeMarkdownRead(data, options.maxBlocks), options.format === 'section')
       default:
         return data
     }
