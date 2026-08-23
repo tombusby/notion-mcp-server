@@ -734,7 +734,7 @@
         "security": []
       },
       "patch": {
-        "summary": "Append child blocks to a page or block. Pass `after` with an existing block ID to insert at that position rather than at the end. Only `paragraph` and `bulleted_list_item` are described by this schema; to add other block types, write them as Markdown with Update a page's content as Markdown instead. Note that Notion's API has no move operation: reordering existing content means appending a copy and deleting the original, which assigns new block IDs and does not carry over comments.",
+        "summary": "Append child blocks to a page or block. Pass `after` with an existing block ID to insert at that position rather than at the end. Only `paragraph` and `bulleted_list_item` are described by this schema; to add other block types, write them as Markdown with Update a page's content as Markdown instead. Note that Notion's API has no move operation: reordering existing content means appending a copy and deleting the original, which assigns new block IDs and does not carry over comments. REQUIRED WHEN USING `after`: `expected_anchor_hash` must be the `content_hash` of the anchor block named in `after`. Do not construct or modify it. A 409 with code `stale_anchor_hash` means the anchor changed since your read. Appending at the end of the parent needs no hash.",
         "description": "\n\nREQUIRED WHEN USING `after`: `expected_anchor_hash` must be the `content_hash` of the anchor block named in `after`. Do not construct or modify it. A 409 with code `stale_anchor_hash` means the anchor changed since your read. Appending at the end of the parent needs no hash.",
         "operationId": "patch-block-children",
         "parameters": [
@@ -883,7 +883,7 @@
         "security": []
       },
       "patch": {
-        "summary": "Replace a block's content in place, addressed by block ID. Prefer this over Markdown find-and-replace for targeted edits: it does not require reproducing the block's existing text, so it is unaffected by how that text renders. Put the block-type key at the root of the body — `{\"paragraph\": {\"rich_text\": [...]}}` — matching the block's existing type, since a block cannot change type. Get block IDs and their types from Retrieve block children.",
+        "summary": "Replace a block's content in place, addressed by block ID. Prefer this over Markdown find-and-replace for targeted edits: it does not require reproducing the block's existing text, so it is unaffected by how that text renders. Put the block-type key at the root of the body — `{\"paragraph\": {\"rich_text\": [...]}}` — matching the block's existing type, since a block cannot change type. Get block IDs and their types from Retrieve block children. REQUIRED: `expected_content_hash` must be the `content_hash` value returned when you read the block. Do not construct or modify it. A 409 with code `stale_content_hash` means the block changed since your read: re-read it, decide whether your edit still applies, and retry with the new hash.",
         "description": "\n\nREQUIRED: `expected_content_hash` must be the `content_hash` value returned when you read the block. Do not construct or modify it. A 409 with code `stale_content_hash` means the block changed since your read: re-read it, decide whether your edit still applies, and retry with the new hash.",
         "operationId": "update-a-block",
         "parameters": [
@@ -998,7 +998,7 @@
         "security": []
       },
       "delete": {
-        "summary": "Delete a block by ID, along with its children. This is how to remove a section without reproducing its text — read the IDs with Retrieve block children first, then delete each one. Deleting many blocks by ID is far more reliable than a Markdown find-and-replace that has to match every character of the content being removed.",
+        "summary": "Delete a block by ID, along with its children. This is how to remove a section without reproducing its text — read the IDs with Retrieve block children first, then delete each one. Deleting many blocks by ID is far more reliable than a Markdown find-and-replace that has to match every character of the content being removed. REQUIRED: `expected_subtree_hash` must be the `subtree_hash (from API-retrieve-a-block)` value returned when you read the block. Do not construct or modify it. A 409 with code `stale_subtree_hash` means the block changed since your read: re-read it, decide whether your edit still applies, and retry with the new hash.",
         "description": "\n\nREQUIRED: `expected_subtree_hash` must be the `subtree_hash (from API-retrieve-a-block)` value returned when you read the block. Do not construct or modify it. A 409 with code `stale_subtree_hash` means the block changed since your read: re-read it, decide whether your edit still applies, and retry with the new hash.",
         "operationId": "delete-a-block",
         "parameters": [
@@ -2263,8 +2263,8 @@
     },
     "/v1/pages/{page_id}/markdown": {
       "get": {
-        "summary": "Retrieve a page's content as Markdown. Accepts a block ID as well as a page ID, so a single section can be read on its own instead of fetching a whole large page. On a page you have not read before, start with `format: outline` to get the headings and their block IDs cheaply, then read only the section you need. The Markdown returned is display-oriented: escaping of characters such as `*`, `~` and `#` may differ from what is stored, so it is not guaranteed to round-trip when fed back as `old_str`. For edits that must be precise, address blocks by ID via Retrieve block children instead.",
-        "description": "Retrieve the full content of a Notion page rendered as enhanced Markdown. Designed for agentic and developer tools that work natively with Markdown instead of the block JSON returned by Retrieve block children. This read returns no content_hash, so it cannot be used as the source of a precondition for a block write. Take hashes from `format: \"outline\"`, which returns a `content_hash` per heading without reading the page body, or from Retrieve a block / Retrieve block children. Passing a block ID as page_id reads just that section.",
+        "summary": "Retrieve a page's content as Markdown. Accepts a block ID as well as a page ID, so a single section can be read on its own instead of fetching a whole large page. On a page you have not read before, start with `format: outline` to get the headings and their block IDs cheaply, then read only the section you need. The Markdown returned is display-oriented: escaping of characters such as `*`, `~` and `#` may differ from what is stored, so it is not guaranteed to round-trip when fed back as `old_str`. For edits that must be precise, address blocks by ID via Retrieve block children instead. This read returns no content_hash, so it cannot be the source of a precondition for a block write — take hashes from `format: \"outline\"`, Retrieve a block, or Retrieve block children.",
+        "description": "Retrieve the full content of a Notion page rendered as enhanced Markdown. Designed for agentic and developer tools that work natively with Markdown instead of the block JSON returned by Retrieve block children.",
         "operationId": "retrieve-page-markdown",
         "tags": [
           "Pages"
