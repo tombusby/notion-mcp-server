@@ -14,6 +14,31 @@ import { Block, contentHash, subtreeHash, SubtreeTooLargeError } from './content
  * re-read and the write are two calls, and a genuinely simultaneous writer can
  * still land between them. The window shrinks from days to milliseconds, which
  * is the difference between a routine hazard and a lottery.
+ *
+ * Why a hash rather than the two obvious alternatives.
+ *
+ * `expected_last_edited_time` is simpler, and was the first candidate. But
+ * Notion's timestamps are minute-granular (observed: `2026-08-11T21:28:00.000Z`),
+ * so two edits inside the same minute are indistinguishable. It would catch
+ * day-scale staleness — the dominant case — while staying blind to precisely
+ * the races that are hardest to diagnose afterwards. The test named for a
+ * second write inside the same minute exists to pin that difference.
+ *
+ * Invalidating block IDs on every edit — delete-and-recreate, so a stale ID
+ * 404s — gives immutability for free, but destroys comments (Notion attaches
+ * them to blocks), breaks `#block-id` anchor links on every edit, and cascades
+ * through container subtrees. It overloads *identity* to carry *version*.
+ * Version has to travel separately, and the hash is what carries it.
+ *
+ * On why this is enforced rather than advised. The operational rules the
+ * markdown path relied on — re-fetch immediately before editing, never
+ * reconstruct anchors from memory, never trust a clean return, one edit per
+ * region — existed only because the tool could not enforce any of them. They
+ * were discipline substituting for design, and they were violated repeatedly
+ * in practice, including by callers who had written the rules down themselves.
+ * A required hash makes the lapse impossible to express rather than merely
+ * discouraged: forgetting to re-read produces a 409 instead of silent data
+ * loss. The guard must not depend on the caller remembering to be careful.
  */
 
 /** Server-side parameters, consumed here and never forwarded to Notion. */
