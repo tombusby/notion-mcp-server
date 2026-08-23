@@ -85,7 +85,7 @@ const OUTLINE_CONTAINERS = new Set([
 
 export interface PayloadOptions {
   returnContent?: ReturnContent
-  format?: 'markdown' | 'outline'
+  format?: 'markdown' | 'outline' | 'section'
   maxBlocks?: number
 }
 
@@ -120,7 +120,8 @@ export function readPayloadOptions(
     }
 
     case 'retrieve-page-markdown': {
-      const format = params[FORMAT] === 'outline' ? 'outline' : 'markdown'
+      const raw = params[FORMAT]
+      const format = raw === 'outline' || raw === 'section' ? raw : 'markdown'
       const rawMax = params[MAX_BLOCKS]
       const maxBlocks = typeof rawMax === 'number' && Number.isFinite(rawMax) && rawMax > 0 ? Math.floor(rawMax) : undefined
       return { format, maxBlocks }
@@ -376,6 +377,89 @@ export function shapeUpdateResponse(
  * saves no bandwidth and every token — and tokens are what the caller actually
  * runs out of.
  */
+/** A rendered Markdown heading: the hashes, then the text. */
+const MARKDOWN_HEADING = /^(#{1,6})\s+(.*)$/
+
+/**
+ * Compare heading text across the block/Markdown boundary.
+ *
+ * The rendered form escapes literal punctuation (`~` becomes `\~`) and may
+ * differ in whitespace, so a byte comparison against the block's `plain_text`
+ * would miss. Both sides are unescaped and whitespace-collapsed instead.
+ */
+function normaliseHeading(text: string): string {
+  return text.replace(/\\(.)/g, '$1').replace(/\s+/g, ' ').trim()
+}
+
+/** The heading level and plain text of a block, or null if it is not a heading. */
+export function headingOf(block: any): { level: number; text: string } | null {
+  const level = HEADING_LEVELS[block?.type]
+  if (!level) return null
+  const richText = block?.[block.type]?.rich_text ?? []
+  const text = richText.map((run: any) => run?.plain_text ?? run?.text?.content ?? '').join('')
+  return { level, text }
+}
+
+/**
+ * Cut one heading's section out of a page's rendered Markdown.
+ *
+ * A section is the heading plus every following block up to the next heading of
+ * the same or a higher level — which is what the outline's `section_blocks`
+ * counts. It cannot be had by reading the heading's own block ID: Notion
+ * headings are *siblings* of the content beneath them, not parents of it, so
+ * that read returns the heading line alone.
+ *
+ * Returns null rather than guessing when the heading cannot be located
+ * unambiguously — absent, or repeated verbatim elsewhere on the page. A wrong
+ * section returned confidently is worse than an honest fallback to the block's
+ * own content.
+ */
+export function sliceSection(markdown: string, level: number, text: string): { markdown: string; blocks: number } | null {
+  const blocks = splitBlocks(markdown)
+  const wanted = normaliseHeading(text)
+
+  const starts: number[] = []
+  blocks.forEach((block, index) => {
+    const match = MARKDOWN_HEADING.exec(block)
+    if (match && match[1].length === level && normaliseHeading(match[2]) === wanted) {
+      starts.push(index)
+    }
+  })
+  if (starts.length !== 1) return null
+
+  const start = starts[0]
+  let end = blocks.length
+  for (let i = start + 1; i < blocks.length; i++) {
+    const match = MARKDOWN_HEADING.exec(blocks[i])
+    if (match && match[1].length <= level) {
+      end = i
+      break
+    }
+  }
+
+  const section = blocks.slice(start, end)
+  return { markdown: section.join('\n'), blocks: section.length }
+}
+
+/**
+ * Note a lone-heading result, which is almost always a caller expecting a
+ * section read. Costs nothing: it is read off the response we already have.
+ */
+export function addSectionHint(data: unknown): unknown {
+  if (!data || typeof data !== 'object') return data
+  const record = data as Record<string, unknown>
+  if (typeof record.markdown !== 'string' || record.truncated === true) return data
+  const blocks = splitBlocks(record.markdown)
+  if (blocks.length !== 1 || !MARKDOWN_HEADING.test(blocks[0])) return data
+  return {
+    ...record,
+    section_hint:
+      'This block is a heading, and its section is not nested beneath it — the content that follows ' +
+      'this heading on the page is stored as its siblings. Re-read with format: "section" to get the ' +
+      'heading together with the blocks under it.',
+  }
+}
+
 export function shapeMarkdownRead(data: unknown, maxBlocks: number | undefined): unknown {
   if (maxBlocks === undefined || !data || typeof data !== 'object') {
     return data
@@ -393,6 +477,6 @@ export function shapeMarkdownRead(data: unknown, maxBlocks: number | undefined):
     omitted_blocks: blocks.length - maxBlocks,
     truncation_note:
       `Showing the first ${maxBlocks} of ${blocks.length} blocks. Use format: "outline" to locate a ` +
-      `section, then read that section by passing its block ID as page_id.`,
+      `section, then read it by passing its block ID as page_id with format: "section".`,
   }
 }

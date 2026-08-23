@@ -6,7 +6,10 @@ import { HttpClient, HttpClientError } from '../client/http-client'
 import { ContentUpdate, validateContentUpdates } from './content-updates'
 import { annotateReadResponse, BlockReader, enforcePrecondition, PreconditionError } from './block-preconditions'
 import {
+  addSectionHint,
   buildOutline,
+  headingOf,
+  sliceSection,
   readPayloadOptions,
   shapeMarkdownRead,
   shapeUpdateResponse,
@@ -258,6 +261,15 @@ export class MCPProxy {
           return { content: [{ type: 'text', text: JSON.stringify(outline) }] }
         }
 
+        if (payloadOptions.format === 'section') {
+          const section = await this.readSection(String(deserializedParams.page_id ?? ''))
+          if (section) {
+            return { content: [{ type: 'text', text: JSON.stringify(section) }] }
+          }
+          // Not a heading, or not locatable — fall through to a normal read
+          // rather than failing. The response carries a note saying so.
+        }
+
         // Block writes carry a content-hash precondition. Verified before the
         // request is sent, so a stale write leaves nothing written. Returns
         // the params with the server-side hash arguments removed — they are
@@ -348,7 +360,10 @@ export class MCPProxy {
       case 'update-page-markdown':
         return shapeUpdateResponse(data, contentUpdates, options.returnContent ?? 'changed')
       case 'retrieve-page-markdown':
-        return shapeMarkdownRead(data, options.maxBlocks)
+        // The hint costs nothing — it is read off the response already in hand
+        // — and catches the caller who passed a heading's block ID expecting
+        // its section and got the heading line by itself.
+        return addSectionHint(shapeMarkdownRead(data, options.maxBlocks))
       default:
         return data
     }
@@ -356,6 +371,54 @@ export class MCPProxy {
 
   private findOperation(operationId: string): (OpenAPIV3.OperationObject & { method: string; path: string }) | null {
     return this.openApiLookup[operationId] ?? null
+  }
+
+  /**
+   * Read a heading's whole section, which is what `format: "outline"` promises
+   * a block ID is good for.
+   *
+   * Notion headings are siblings of the content beneath them, so
+   * `GET /v1/pages/{heading_id}/markdown` returns the heading line by itself.
+   * The section has to be cut out of the parent's rendered Markdown instead.
+   *
+   * That means fetching the parent in full — deliberately. The resource being
+   * conserved is the caller's context, not Notion's bandwidth: returning 27
+   * blocks instead of 239 is the entire point, and the large fetch stays on
+   * this side of the wire.
+   *
+   * Returns null when the block is not a heading or its section cannot be
+   * located unambiguously, so the caller falls back to an ordinary read.
+   */
+  private async readSection(blockId: string): Promise<Record<string, unknown> | null> {
+    if (!blockId) return null
+    const markdownOp = this.findOperation('API-retrieve-page-markdown')
+    if (!markdownOp) return null
+
+    const block = (await this.blockReader().retrieveBlock(blockId)) as any
+    const heading = headingOf(block)
+    if (!heading) return null
+
+    const parent = block?.parent ?? {}
+    const parentId = parent.page_id ?? parent.block_id
+    if (!parentId) return null
+
+    const response = await this.httpClient.executeOperation(markdownOp, { page_id: parentId })
+    const markdown = (response.data as { markdown?: unknown })?.markdown
+    if (typeof markdown !== 'string') return null
+
+    const section = sliceSection(markdown, heading.level, heading.text)
+    if (!section) return null
+
+    return {
+      object: 'page_markdown_section',
+      id: blockId,
+      parent_id: parentId,
+      heading: heading.text,
+      level: heading.level,
+      markdown: section.markdown,
+      section_blocks: section.blocks,
+      truncated: false,
+    }
   }
 
   /**

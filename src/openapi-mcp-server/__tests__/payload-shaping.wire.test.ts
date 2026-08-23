@@ -193,7 +193,17 @@ describe('page-markdown payload shaping', () => {
       ])
     })
 
-    it('a block ID from the outline reads back that section alone', async () => {
+    it('a plain read of a heading block returns the heading alone, and says so', async () => {
+      // The defect this pins: Notion headings are siblings of their content, so
+      // reading a heading's own ID gets the heading line and nothing else. The
+      // outline advertised this as a scoped section read for weeks.
+      const data = await callTool(h.client, 'API-retrieve-page-markdown', { page_id: H2_LANDED })
+
+      expect(data.markdown).toBe('## What landed')
+      expect(data.section_hint).toContain('format: "section"')
+    })
+
+    it('format: "section" returns the heading together with its siblings', async () => {
       const outline = await callTool(h.client, 'API-retrieve-page-markdown', {
         page_id: PAGE_ID,
         format: 'outline',
@@ -201,11 +211,38 @@ describe('page-markdown payload shaping', () => {
       const section = outline.outline.find((e: any) => e.block_id === H2_LANDED)
 
       h.fake.requests.length = 0
-      await callTool(h.client, 'API-retrieve-page-markdown', { page_id: section.block_id })
+      const data = await callTool(h.client, 'API-retrieve-page-markdown', {
+        page_id: section.block_id,
+        format: 'section',
+      })
 
-      // Outline -> scoped read, with no full-page read anywhere in the
-      // sequence. This is the workflow the whole change exists to make cheap.
-      expect(seq(h.requests)).toEqual([`GET /v1/pages/${H2_LANDED}/markdown`])
+      expect(data.object).toBe('page_markdown_section')
+      // Heading + two paragraphs + the toggle + the table, stopping at the next
+      // h2. Counted against the Markdown fixture, not the outline's
+      // section_blocks: this fake's block tree and its Markdown are independent
+      // fixtures and do not describe the same page (see notion-fake.ts).
+      expect(data.section_blocks).toBe(5)
+      expect(data.markdown.startsWith('## What landed')).toBe(true)
+      expect(data.markdown).toContain('</table>')
+      expect(data.markdown).not.toContain('## Still open')
+      expect(data.markdown).not.toContain('The opening paragraph of the page.')
+      expect(section.section_blocks).toBeGreaterThan(0)
+
+      // Retrieve the block to learn its parent and level, then read the parent
+      // in full and cut the section out on this side of the wire. The large
+      // fetch is deliberate: what is being conserved is the caller's context.
+      expect(seq(h.requests)).toEqual([
+        `GET /v1/blocks/${H2_LANDED}`,
+        `GET /v1/pages/${PAGE_ID}/markdown`,
+      ])
+    })
+
+    it('falls back to an ordinary read when the block is not a heading', async () => {
+      const data = await callTool(h.client, 'API-retrieve-page-markdown', {
+        page_id: 'body-1',
+        format: 'section',
+      })
+      expect(data.object).toBe('page_markdown')
     })
 
     it('never sends format to Notion', async () => {

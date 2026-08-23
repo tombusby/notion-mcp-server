@@ -2298,11 +2298,12 @@
               "type": "string",
               "enum": [
                 "markdown",
-                "outline"
+                "outline",
+                "section"
               ],
               "default": "markdown"
             },
-            "description": "`markdown` (default) returns the page content. `outline` returns only the headings, each with its block ID, content hash and section size, and does not read the page body at all — turning `find the section I need` from a whole-page read into a few hundred tokens. The usual workflow on a large page is: read the outline, take the block ID of the section you want, pass that block ID back here as `page_id` for a scoped read, then edit with Update a block."
+            "description": "`markdown` (default) returns the page content. `outline` returns only the headings, each with its block ID, content hash and section size, and does not read the page body at all. `section` takes a heading's block ID as page_id and returns that heading together with the blocks beneath it — use it instead of a plain read, because a Notion heading's content is stored as its siblings, so reading the heading's own ID returns just the heading line. The usual workflow on a large page is: read the outline, take the block ID of the section you want, re-read it with format: \"section\", then edit with Update a block."
           },
           {
             "name": "max_blocks",

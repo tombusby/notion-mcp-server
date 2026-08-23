@@ -89,6 +89,14 @@ export const OUTLINE_TOGGLE = 'outline-toggle'
 /**
  * The page body as Markdown, kept separately from the block tree.
  *
+ * KNOWN INCONSISTENCY: the block tree and INITIAL_PAGE_MARKDOWN below are
+ * independent fixtures and do not describe the same page — the Markdown has a
+ * table and a trailing `## Still open` that the tree does not, so a section
+ * counted from the tree and the same section counted from the Markdown differ.
+ * Tests must be explicit about which one they are asserting against. Worth
+ * reconciling: a fake that disagrees with itself is how the outline's scoped
+ * read went wrong undetected in the first place.
+ *
  * Notion renders markdown server-side and returns it as an opaque string, so
  * the fake does the same rather than deriving it from the blocks: deriving it
  * would quietly assert that the two views agree, which is precisely the thing
@@ -340,11 +348,25 @@ export function createFakeNotion(): FakeNotion {
     res.json({ ...b, archived: true, in_trash: true })
   }) as RequestHandler)
 
+  /** The one-line Markdown form of a block, matching how Notion renders it. */
+  function renderBlock(block: any): string {
+    const level = { heading_1: '#', heading_2: '##', heading_3: '###' }[block.type as string]
+    const text = (block[block.type]?.rich_text ?? []).map((r: any) => r.plain_text ?? '').join('')
+    return level ? `${level} ${text}` : text
+  }
+
   // Both markdown endpoints return the whole page, on reads and writes alike.
   // That is the behaviour the payload shaping exists to trim, so the fake has
   // to reproduce it rather than a convenient short response.
   app.get('/v1/pages/:id/markdown', ((req, res) => {
-    res.json({ object: 'page_markdown', id: req.params.id, markdown: store.pageMarkdown, truncated: false })
+    // A block ID renders that block and its children — NOT the section that
+    // follows it. Notion headings are siblings of their content, so a heading
+    // renders as the heading line alone. The fake returned the whole page for
+    // every ID, which made the outline's advertised scoped read look like it
+    // worked; it does not, and no test could see that while the fake lied.
+    const block = store.blocks.get(req.params.id)
+    const markdown = block && block.type !== 'child_page' ? renderBlock(block) : store.pageMarkdown
+    res.json({ object: 'page_markdown', id: req.params.id, markdown, truncated: false })
   }) as RequestHandler)
 
   app.patch('/v1/pages/:id/markdown', ((req, res) => {

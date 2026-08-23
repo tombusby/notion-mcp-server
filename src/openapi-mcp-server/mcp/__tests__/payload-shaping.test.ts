@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractRegion, shapeMarkdownRead, shapeUpdateResponse, splitBlocks } from '../payload-shaping'
+import { addSectionHint, extractRegion, headingOf, shapeMarkdownRead, shapeUpdateResponse, sliceSection, splitBlocks } from '../payload-shaping'
 
 /**
  * Unit tests over a corpus captured verbatim from a real Notion page.
@@ -125,5 +125,97 @@ describe('receipts stay small on real content', () => {
       ['# 🧭 Routes in', splitBlocks(REAL_PAGE)[1], '## 📚 Bibliography lines'].join('\n'),
     )
     expect(trimmed.omitted_blocks).toBe(11)
+  })
+})
+
+describe('sliceSection, against a real page shape', () => {
+  // Notion headings are siblings of their content, never parents. This fixture
+  // is deliberately FLAT for that reason: the wire test's fake nested content
+  // under headings, which is why it could not catch the defect this covers.
+  const FLAT = [
+    '# Top',
+    'Intro paragraph.',
+    '## First section',
+    'Body of first.',
+    'More of first.',
+    '### Nested under first',
+    'Body of nested.',
+    '## Second section',
+    'Body of second.',
+  ].join('\n')
+
+  it('returns the heading plus its siblings, stopping at the next peer heading', () => {
+    const section = sliceSection(FLAT, 2, 'First section')!
+    expect(section.blocks).toBe(5)
+    expect(section.markdown).toBe(
+      ['## First section', 'Body of first.', 'More of first.', '### Nested under first', 'Body of nested.'].join('\n'),
+    )
+  })
+
+  it('stops at a higher-level heading, not only an equal one', () => {
+    const section = sliceSection(FLAT, 3, 'Nested under first')!
+    expect(section.markdown).toBe(['### Nested under first', 'Body of nested.'].join('\n'))
+  })
+
+  it('runs to the end of the page when nothing closes the section', () => {
+    const section = sliceSection(FLAT, 2, 'Second section')!
+    expect(section.blocks).toBe(2)
+  })
+
+  it('takes the whole page for a top-level heading', () => {
+    expect(sliceSection(FLAT, 1, 'Top')!.blocks).toBe(9)
+  })
+
+  it('matches through the escaping the renderer adds', () => {
+    // The block stores `~140 years`; the Markdown comes back `\~140 years`.
+    const page = ['## \\~140 years', 'Body.'].join('\n')
+    expect(sliceSection(page, 2, '~140 years')!.blocks).toBe(2)
+  })
+
+  it('refuses rather than guessing when a heading is repeated', () => {
+    const page = ['## Notes', 'One.', '## Other', 'Two.', '## Notes', 'Three.'].join('\n')
+    expect(sliceSection(page, 2, 'Notes')).toBeNull()
+  })
+
+  it('refuses when the heading is not on the page at all', () => {
+    expect(sliceSection(FLAT, 2, 'Nonexistent')).toBeNull()
+  })
+
+  it('does not mistake a heading inside a container for a top-level one', () => {
+    expect(sliceSection(REAL_PAGE, 3, 'A heading inside the toggle')).toBeNull()
+  })
+})
+
+describe('headingOf', () => {
+  it('reads level and text off a heading block', () => {
+    expect(headingOf({ type: 'heading_2', heading_2: { rich_text: [{ plain_text: 'What landed' }] } })).toEqual({
+      level: 2,
+      text: 'What landed',
+    })
+  })
+
+  it('joins runs, so formatting does not split the text', () => {
+    const block = { type: 'heading_1', heading_1: { rich_text: [{ plain_text: 'Bold' }, { plain_text: ' and rest' }] } }
+    expect(headingOf(block)!.text).toBe('Bold and rest')
+  })
+
+  it('returns null for anything that is not a heading', () => {
+    expect(headingOf({ type: 'paragraph', paragraph: { rich_text: [] } })).toBeNull()
+  })
+})
+
+describe('addSectionHint', () => {
+  it('flags a lone heading, which is the shape that confuses callers', () => {
+    const hinted = addSectionHint({ object: 'page_markdown', markdown: '## 6. What sets valence?' }) as any
+    expect(hinted.section_hint).toContain('format: "section"')
+  })
+
+  it('says nothing when the read returned real content', () => {
+    const hinted = addSectionHint({ object: 'page_markdown', markdown: '## Heading\nBody.' }) as any
+    expect(hinted.section_hint).toBeUndefined()
+  })
+
+  it('says nothing about a lone paragraph', () => {
+    expect((addSectionHint({ object: 'page_markdown', markdown: 'Just a paragraph.' }) as any).section_hint).toBeUndefined()
   })
 })
